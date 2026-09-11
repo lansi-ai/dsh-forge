@@ -19,6 +19,7 @@ import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { bootGraphSchema, type BootEntry, type BootGraph, type BootBatch } from '../types/boot.js'
 import { log } from './log.js'
+import { externalClientDecls, forgeProfile } from './profile-plugins.js'
 
 // ── 类型定义 ─────────────────────────────────────────────────────────
 
@@ -188,6 +189,13 @@ export function buildThirdPartyBundles(): BootBundleDecl[] {
     } catch (error) {
       log.warn(`[boot-graph] 第三方插件 ${id} 装载声明解析失败，已跳过:`, error)
     }
+  }
+  // 外部插件（$DSH_HOME/profiles/dsh-forge）：装了才进图谱、卸了即消失。
+  // 单包失败不阻断整体——图谱缺一项只影响那一个插件的界面半。
+  try {
+    decls.push(...externalClientDecls(forgeProfile()))
+  } catch (error) {
+    log.warn('[boot-graph] 外部插件浏览器半发现失败，已跳过:', error)
   }
   return decls
 }

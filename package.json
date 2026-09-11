@@ -20,6 +20,7 @@
     "logo": "node scripts/process-logo.cjs",
     "upstream:check": "node scripts/upstream.cjs check",
     "upstream:auto": "node scripts/upstream.cjs auto",
+    "verify:profile-plugins": "node scripts/verify-profile-plugins.cjs",
     "release": "node scripts/release.cjs",
     "docs:dev": "vitepress dev website",
     "docs:build": "vitepress build website",

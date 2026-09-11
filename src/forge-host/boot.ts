@@ -18,6 +18,7 @@ import { writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { app } from 'electron'
 import { log } from './log.js'
 import { resolveUserDataRoot } from './forge-home-paths.js'
+import { forgeProfile, rewriteInsertNames } from './profile-plugins.js'
 import type { PatchOptions } from '@deepseek-ai/cordis-plugin-include' with { 'resolution-mode': 'import' }
 
 // 运行时数据根目录（M4-a1·打包路径适配）：
@@ -480,6 +481,40 @@ function buildPatches(serveMode: boolean, servePort: number): PatchOptions[] {
 }
 
 /**
+ * 加载外部插件补丁层（`$DSH_HOME/profiles/dsh-forge`）。
+ *
+ * 补丁**解析**走官方 `loadOverlayPatches`，`!!js` 求值与相对路径锚定因此与上游
+ * 逐字一致；本函数只多做一件事：把插入行里的**裸包名**改写成入口绝对路径。
+ *
+ * 为什么必须改写：dsh-forge 打包后把 `bareModuleBaseUrl` 固定指向 asar 内的
+ * node_modules，裸名永远够不到 `$DSH_HOME/profiles/node_modules`；而**绝对路径**
+ * 上游原生支持（`mountRootInclude` 会把它转成 file URL 直取）。
+ *
+ * 任何一层失败都只跳过该层并告警，绝不阻断启动。
+ *
+ * @returns 追加到补丁栈末的外部插件层（无外部插件时为空数组）。
+ */
+async function externalPluginPatches(): Promise<PatchOptions[]> {
+  const profile = forgeProfile()
+  if (profile.patchFiles.length === 0) return []
+  const { loadOverlayPatches } = await import('@deepseek-ai/dsh-app-boot')
+  const layers: PatchOptions[] = []
+  for (const file of profile.patchFiles) {
+    try {
+      layers.push(...loadOverlayPatches('dsh-forge', file))
+    } catch (error) {
+      log.error(`[dsh-profile] 补丁层加载失败，已跳过：${file}`)
+      log.error(error)
+    }
+  }
+  const rewritten = rewriteInsertNames(layers, profile)
+  if (profile.packages.length > 0) {
+    log.ok(`[dsh-profile] 外部插件层已合并：${String(profile.packages.length)} 个包，改写插入行 ${String(rewritten)} 条`)
+  }
+  return layers
+}
+
+/**
  * 启动 dsh-forge Cordis Host。
  *
  * @param options 配置选项。
@@ -498,7 +533,9 @@ export async function bootDesktopHost(options: BootOptions = {}): Promise<unknow
   const serveMode = options.serveMode === true
   const servePort = options.servePort ?? 38000
   const configPath = options.configPath ?? createRootConfig()
-  const patches = options.patches ?? buildPatches(serveMode, servePort)
+  // 外部插件层（$DSH_HOME/profiles/dsh-forge）恒追加于栈尾：装了才生效，未装为空。
+  // 自定义 patches（测试脚本）刻意不注入，保持「给定补丁栈即全部」的语义。
+  const patches = options.patches ?? [...buildPatches(serveMode, servePort), ...(await externalPluginPatches())]
 
   // 装配进度轮询句柄（prepare 钩子内启动，finally 统一清理）。
   let progressTimer: ReturnType<typeof setInterval> | undefined
