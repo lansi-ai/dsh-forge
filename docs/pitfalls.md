@@ -785,3 +785,59 @@
   4. **unary 表优先于 apiProxy 是一条双向契约**：自研要补位就补位（官方端点不存在时），但要清醒地知道「补位即接管」；官方 host 半装载后必须撤掉同名自研注册，否则官方实现静默失效（坑 55 同款陷阱）。
   5. **官方给的数据字段别自作主张省掉**：`agentPresets` 不是「可有可无的附加信息」，它是页面渲染「会话插件」分组与「预设中启用」标记的**唯一依据**，省掉等于删功能。
   6. **「列出某个预设挂了哪些行」时，三条聚合纪律缺一即少行**（本次一次踩满）：① **主键用 entryId 而非模块名**——`minimal` 的 `terminal-bash`（bash）与 `terminal-pwsh`（pwsh）同名同为 `@deepseek-ai/dsh-terminal-bash`，仅 entryId 不同，按模块名去重直接吞掉一行；② **停用行照列**——`disabled: !!js process.platform === 'win32'` 的 bash 栈在 win32 就是「已停用」，过滤掉等于删掉「本机为何没有 bash」这个答案（官方会话插件分组同口径，标签为 已启用/已停用/条件启用）；③ **不并进全局平面**——同名模块若在全局平面已有行，预设行被吸收后就永远看不见。另外：**4 个 shipped 预设合计 92 行且彼此大量重复**（standard 28 / ptc 29 / cordis 29 / minimal 6），必须用**切换器**一次看一个，平铺即灾难；验证数据口径的最快路径是直接读 `node_modules/@deepseek-ai/dsh-agent-presets/presets/<preset>/agent.cordis.yml`（组行 `group: true` 递归展开、跳过组行本身），比反复猜 API 返回快得多。
+
+## 坑 58：外部插件以**裸包名**声明时在 dsh-forge 里永远解析不到 —— `boot()` 不读 profile + `bareModuleBaseUrl` 把裸名钉死在应用自己的 node_modules
+
+- **现象**：按上游 profile 约定把插件行写成裸包名（`name: dsh-llm-app-credentials`，包放 `$DSH_HOME/profiles/node_modules/`），官方 dsh CLI 装载正常；dsh-forge 里**插件毫无反应**——没有报错、没有日志，设置页也不出现新 section。反向线索：把同一行改成**绝对路径** `name: E:/.../lib/index.js` 就立刻生效。
+
+- **根因**（两层，第一层让配置整层不存在，第二层让裸名即使被读到也解析不到）：
+  1. **`boot()` 本身不读 profile**。[boot](file:///e:/Projects/DSH/desktop/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js#L1525-L1547) 的入参只有 `absoluteConfigPath` + `patches` + `prepare` + `bareModuleBaseUrl`；`loadProfile` / `loadProfileDirectory` 是**调用方**的职责（`dsh-app-boot` 只在它自己的 CLI 里接）。而 forge 的 [bootDesktopHost](file:///e:/Projects/DSH/desktop/src/forge-host/boot.ts#L493-L629) 一直直传自写的空 `cordis.yml` + 硬编码 `DESKTOP_OVERLAY_PATCHES` → `$DSH_HOME/profiles/dsh-forge/cordis.patch.yml` 这层**从头到尾没被消费过**（不是读错，是没读）。
+  2. **裸名被 `bareModuleBaseUrl` 钉死**。[mountRootInclude](file:///e:/Projects/DSH/desktop/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js#L1322-L1333) 在给了 `bareModuleBaseUrl` 时，把**所有既不绝对也不相对**的 specifier 交给 `internal.import(specifier, bareModuleBaseUrl)`；forge 在 dev 传 `desktop/node_modules`、打包传 asar 内 node_modules —— 两处都**永远够不到** `$DSH_HOME/profiles/node_modules`。同一段代码里恰好写了出路：`isAbsolute(name) ? pathToFileURL(name).href : name` —— **绝对路径是上游原生支持的**。
+
+- **解法**（2026-09-11；`npm run verify:profile-plugins` 8/8 + typecheck/lint/build/30 单测全绿，插件已实机装载）：
+  - **新增装载层**：[profile-plugins.ts](file:///e:/Projects/DSH/desktop/src/forge-host/profile-plugins.ts)（解析/初始化 `$DSH_HOME/profiles/dsh-forge`，收集各 bundle 层 + 用户层的补丁文件，**把插入行的裸名改写成入口绝对路径**，导出体检通过的外部包）+ [plugin-package.ts](file:///e:/Projects/DSH/desktop/src/forge-host/plugin-package.ts)（包解析 + **peer 可解析性体检** + `dsh.client` 浏览器半声明）。
+  - **补丁语义不另起一套**：解析仍走官方 `loadOverlayPatches`（`!!js` 求值、相对路径锚定逐字一致）；本层只做「加一层 + 改写名字」。
+  - **发现与作用分离**：`boot-graph.ts` 的图谱生成是**同步**的，所以发现扫描用 `yaml.parse({ logLevel:'silent' })` 只读行（实测 `!!js` 标签只告警不抛错），而补丁的**求值**留在 async 的 `boot.ts`。
+  - **只改写 `insert[]` 里的 name**：`{ id, name, config }` 形式的覆盖补丁里 `name` 是**匹配条件**，改写它会让该补丁静默失效。
+  - **零回归**：`$DSH_HOME/profiles/dsh-forge` 不存在且没装外部插件时，补丁栈与改动前完全相同（profile 目录由本层按需初始化，模板写 `[]`）。
+
+- **复盘要点**：
+  1. **「配置写在文件里」≠「配置被读」**：这类故障全程静默、无日志、无报错。排查「某层配置不生效」的第一问必须是**谁在消费它**——本次的答案是「没人」：`boot()` 只吃 `patches`，profile 是调用方的活。
+  2. **解析基址（`bareModuleBaseUrl`）是全局开关**：一旦固定，**所有**裸名都被钉死在那一棵 node_modules 上，外部安装路径只能退化为绝对路径。看到「上游支持某写法但这里不行」时，先去看解析基址，而不是先去怀疑插件本身。
+  3. **`internal.import` 同段代码里的 `isAbsolute` 分支就是官方给的答案**：绝对路径被转成 file URL 直取，与 base 无关——上游设计里已经预留了「外挂」这一格，只是 forge 过去没有走到。
+  4. **ESM 模块身份是硬约束，不能用 `npm install` 解决**：外部插件要复用宿主的 `LlmAdapter` / `LlmError` / `Service` 基类，就必须解析到**同一实例**。手段是在插件目录内建指向宿主 `node_modules` 的 **junction**（Windows junction 免管理员权限；symlink 需要），Node 走 realpath 后命中同一模块记录。装第二份副本 → 注册与错误分类都会以最难查的方式失败。
+  5. **要「装坏不影响主程序」就必须自己做插入前体检**：`assertEntriesActivated` 对**任一**未激活条目抛错并回滚整棵树（fail-closed），所以一个 peer 链坏掉的插件足以让应用起不来。本层在插入前逐个 `resolve` 声明的 peer，不通过就**跳过 + 响亮告警**（给出可操作修复语句），而不是把 Loader 的报错留给用户。
+  6. **外部插件的「发现」发生在进程启动**，新装/卸载需重启应用；这与「图谱在页面加载时重建」不矛盾——后者只是对**已发现**的包重算 bundle rev。别把两者混为一谈而误以为「刷新页面即可装载新插件」。
+
+## 坑 59：外部 LLM 适配器不声明推理档位 → 存量 `reasoningEffort` 在**任何网络 I/O 之前**就把请求拒掉
+
+- **现象**：把 `agent-default-model.provider` 切到新装的外部适配器路由后，第一次请求就失败，报 `provider "…" model "…" does not support reasoning effort "off"`（`UNSUPPORTED_REASONING_EFFORT`）；终端里**没有任何出网迹象**（连接都不曾建立），容易误判为「上游连不上」。
+
+- **根因**：
+  1. `dsh-llm` 的档位校验是**拒绝式**的。[resolveCallWithInfo](file:///e:/Projects/DSH/desktop/node_modules/@deepseek-ai/dsh-llm/lib/index.js#L2110-L2125) 里 `reasoning === void 0`（模型未声明档位）且 caller 传了 `requested` → 直接抛；且它在 provider I/O **之前**执行。
+  2. **`reasoningEffort` 是「存量常在」的**。`dsh-agent-default-model` 的设置分节带这个字段（README 明确「它属于设置层、不是配置字段」），`selection()` 把存储值原样投影进 `currentSelection()` → 只要用户曾经存过一次，它就一直跟着请求走。
+  3. harness **没有** `off` 哨兵：`dsh-llm` 全 lib grep `'off'` 零命中。所以「关闭」也必须由**适配器自己声明**，否则连「什么都不发」这个诉求都表达不了。
+
+- **解法**（插件侧，2026-09-11）：`resolveModel` 恒返回 `reasoning` —— 「关闭」(`off`) 恒在且为 `defaultEffort`（发不出任何 `reasoning_effort`），其余档位由每路由 `reasoningEfforts` 配置（默认 `[low, medium, high]`，置 `[]` 即只开放「关闭」）；序列化端把 `off` 直接丢掉。验证：直接实例化适配器断言 6 项（off 不进 body / high 进 body / 未指定不进 body / 必有 off 档 / 默认档为 off / `[]` 时只剩 off）全绿。
+
+- **复盘要点**：
+  1. **写适配器时，「可选能力」的元数据往往是必填项**：不声明 ≠ 不支持，而是「一律拒绝」。`resolveModel` 上那些可选字段（`reasoning` / `context` / `defaultMaxTokens`）都要先问一句「不声明时 harness 会怎么对待」，再决定省不省。
+  2. **官方 UI 会顺手清脏值，手改配置文件不会**：`agent-default-model.saveSelection()` 走 `settings.replace(ns, {provider, model})` —— **缺键即清**，所以官方「模型」页切换 provider 时会自动清掉旧档位；而手写 `settings.yaml` 保留 `reasoningEffort: off` 就会踩坑。排障先分辨用户走的是「UI 路径」还是「手改路径」。
+  3. **「无值」语义必须由声明者定义**：harness 只认「声明集里的 id」，不存在通用哨兵。把 `off` 做成「声明集首项 + defaultEffort」，既过校验又准确表达「什么都不发」。
+
+## 坑 60：schemastery 可选嵌套对象的内层 `.required()` 必然报错 —— 且抛在 `ctx.inject` 回调里会被 Cordis **隔离**，表现为「设置页静默 unavailable」
+
+- **现象**：外部插件的设置页**正常出现**（UI 半、槽位注册都对），但页面上命名空间是 `unavailable`、`0 条路由`；**终端没有任何报错**。反证：同一个插件的适配器路由其实注册成功了（`ctx.llm.listProviders()` 能看到）——即「host 半活着，但设置命名空间不存在」。
+
+- **根因**（三层叠加，缺一层都不会这么难查）：
+  1. **schemastery 的可选嵌套对象会先materialize 成 `{}`**，再跑内层 schema。所以「外层可选 + 内层 `.required()`」这个组合**不可表达**：只要某条 profile 省略了 `attribution`，校验就报 `$.providers.<route>.attribution.product missing required value`。
+  2. **异常抛在 `ctx.inject(['settings'], cb)` 的回调里** —— 该回调在条目**激活之后**才执行，抛错被 Cordis 隔离，`assertEntriesActivated` 早已通过，于是 boot 照常成功、窗口照常打开，故障退化为**纯粹静默的功能缺失**。
+  3. **`unavailable` 的官方语义**正是「该命名空间未暴露给此客户端」，所以症状把注意力引向「客户端 / 权限 / 连接」，而真因在 host 侧的 schema 校验。
+
+- **解法**（插件侧，2026-09-11）：内层字段去掉 `.required()`，完整性改在**用点**判定（`completeIdentity()`：三项缺一即退回插件身份，绝不发一个 product 为空的 `User-Agent`）；并把 `installSection` 整段包 `try/catch` + `logger.error`——**注册失败必须响亮**。验证：用真实 `boot()` 在纯 Node 起最小树，断言「适配器路由已注册 / 命名空间已注册 / base 含两条探测路由 / schema 默认已materialize / 必有 off 档且默认 off / off 不上线 / high 上线」共 **7 项全绿**。
+
+- **复盘要点**：
+  1. **schemastery 里「可选对象 + 内层必填」不可表达**：内层 `.required()` 只在「外层一定存在」时成立——外层自己也 `.required()`，或它处在数组元素里。想表达「给了就必须给全」，只能写进 `validate` 回调，或在**用点**兜底。
+  2. **`ctx.inject` 回调是「已激活之后」的代码，抛错会被隔离**：凡写在这里的初始化（注册命名空间、注册目录、订阅服务）都必须自带 `try/catch` + 明确日志，否则故障一律表现为「功能静默缺失」，而不是「启动失败」。
+  3. **「一半功能在、一半不在」先怀疑注入回调**：本次「适配器路由有（`apply` 顶层成功）＋ 命名空间没有（inject 回调内失败）」这个组合，把范围一步压到 inject 回调内部，比盲查客户端快得多。
+  4. **纯 Node 复现宿主装配是可行且高效的**：给最小 patch 集 + 真实 `boot()`，就能在沙箱内验证条目的激活与命名空间注册，不必反复启 Electron。**注意** `bareModuleBaseUrl` 必须传 **file URL**（`pathToFileURL(dir).href + '/'`），传文件路径会以 `Invalid URL` 报错并把你带偏——那是探针的坑，不是插件的。

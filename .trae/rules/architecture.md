@@ -8,7 +8,7 @@ alwaysApply: true
 
 ## 01. 目录映射与文件放置规则
 - `src/forge-shell/`：Electron 应用外壳（`main.ts` 入口、BrowserWindow 创建、`dsh-ui://` 协议注册、单例锁、崩溃 relaunch）。禁止写业务逻辑与 Host 装配。
-- `src/forge-host/`：宿主装配（`boot()` desktop profile）、`forge-runtime`（roster/manifest 供给 `__DSH_BOOT__`）、IPC 桥宿主端（unary 表分发 + respond 回填 + 帧路由 per-window）、**桌面能力模块**（`forge-api.ts` 提供 `ctx.desktop` 聚合、`forge-tray.ts` / `forge-notify.ts`，经 boot() prepare 注入——M2 当前阶段以**项目内模块**存在，插件包化后再迁出）。
+- `src/forge-host/`：宿主装配（`boot()` desktop profile）、`forge-runtime`（roster/manifest 供给 `__DSH_BOOT__`）、IPC 桥宿主端（unary 表分发 + respond 回填 + 帧路由 per-window）、**桌面能力模块**（`forge-api.ts` 提供 `ctx.desktop` 聚合、`forge-tray.ts` / `forge-notify.ts`，经 boot() prepare 注入——M2 当前阶段以**项目内模块**存在，插件包化后再迁出）、**外部插件装载层**（`profile-plugins.ts` / `plugin-package.ts`：解析 `$DSH_HOME/profiles/dsh-forge` 用户补丁层 → 体检外部包 → 把插入行裸名改写为入口绝对路径，装坏的包只跳过不连坐；ADR-004「bundle 即分发面」的落地，见 `docs/extension-guide.md` §2.5）。
 - `src/forge-compat/`：旧插件兼容（`ctx.webServer` 等价面 `compat-webserver.ts`、preload fetch 拦截白名单、零端口 bundle 服务）。
 - `src/forge-plugins/`：桌面能力 host 插件（forge-tray / forge-hotkey / forge-notify / forge-settings / forge-restart 等），**插件包形态**（`cordis.patch.yml` + `dsh.client` 声明）——M2 暂不在此放文件，留待能力插件包化阶段启用。
 - `src/preload/`：`contextBridge` 白名单 API（`desktopBridge`：rpc/respond/onFrame/http/runtime 等）。
@@ -33,6 +33,7 @@ alwaysApply: true
 | 旧插件路由等价面 / fetch 拦截 / bundle 服务 | `src/forge-compat/` |
 | 托盘/热键/通知/设置等桌面能力插件 | `src/forge-plugins/[plugin-name]/` |
 | renderer 可调用白名单 API | `src/preload/`（同时更新 `src/types/` 契约） |
+| 可选能力 / 外部可独立安装插件（主包不带） | 独立目录（约定 `E:\Projects\DSH\plugins\<包名>\`），经 `$DSH_HOME/profiles/dsh-forge` 用户补丁层装载；主包侧不新增文件（§01 外部插件装载层） |
 | 通用无状态纯函数（格式化/路径规范化）| `src/forge-host/utils/` 或就近 `utils/` |
 
 ## 04. 核心设计模式与模块拆分

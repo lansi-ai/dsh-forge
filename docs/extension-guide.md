@@ -118,6 +118,33 @@ preload 侧在 `src/forge-shell/preload.ts` 白名单加一个 `videoStudio` 命
 - **任务面板独立窗口**：`WindowManager.createSessionWindow` 泛化出的会话窗口机制，可加一种 `windowKind` 分支绑定业务窗口。
 - **`dsh://` 协议**：`dsh-protocol.ts` 加 action（如 `dsh://newvideo?template=x`）供外部系统唤起建单。
 
+### 2.5 外部插件形态：可独立安装，主包不带
+
+上面 §2.1/§2.2 的做法都把代码放进主包（`src/forge-host/` + `src/forge-shell/web/`），随安装包一起发行。若某能力**不该进主包**（可选、面向特定用户、或需要独立演进），就走这条通路：
+
+**位置**：独立目录（本项目约定 `E:\Projects\DSH\plugins\<包名>\`），形态与 `dsh-restart` / `dsh-terminal` 一致——`package.json` 声明 `dsh.bundle.patch` + `dsh.client`，host 半编译为 ESM 入口、浏览器半产出 client bundle。
+
+**装载点**：`$DSH_HOME/profiles/dsh-forge/cordis.patch.yml`（dsh-forge 的应用自有 profile 用户层）。装 = 加一行 insert，卸 = 删那一行。
+
+```yaml
+- insert:
+    - id: my-feature
+      name: my-feature            # 裸名从 $DSH_HOME/profiles/node_modules 解析
+```
+
+**dsh-forge 侧做了什么**（`src/forge-host/profile-plugins.ts` + `plugin-package.ts`）：
+
+1. 启动时解析（并在缺失时初始化）该 profile 目录，把**补丁文件列表**（各 bundle 层 + 用户层）交给官方 `loadOverlayPatches` —— `!!js` 求值、相对路径锚定等语义与上游逐字一致；
+2. 把插入行里的**裸包名改写成入口绝对路径**。这一步是**必须的**：dsh-forge 打包后 `bareModuleBaseUrl` 固定指向 asar 内的 `node_modules`，裸名永远够不到 `$DSH_HOME/profiles/node_modules`，而绝对路径上游原生支持；
+3. 体检通过的外部包，其 `dsh.client` 会被并入客户端图谱（页面加载时重建）；
+4. **体检不通过 = 跳过 + 响亮告警**。Loader 对任一未激活条目都会回滚整棵树，所以一个装坏的插件不得连坐主程序。
+
+**peer 依赖的硬要求**：外部插件的 `@deepseek-ai/*` 等 peer 必须与宿主解析到**同一个模块实例**（否则 `LlmAdapter` / `Service` 基类身份对不上）。做法是在插件目录内建指向宿主 `node_modules` 的 **junction**（Windows 无需管理员权限）；参考实现见 `plugins/dsh-llm-app-credentials/scripts/link-peers.cjs`。
+
+**验证**：`npm run verify:profile-plugins`（纯 Node，未装外部插件时判 SKIP 并 0 退出）。
+
+**注意**：外部插件在**进程启动时**发现，新装/卸载后需要重启应用；这与「图谱在页面加载时重建」不矛盾——后者只是对已发现包重算 bundle rev。
+
 ---
 
 ## 3. 案例路线：AI 视频创建工作流
@@ -165,6 +192,7 @@ preload 侧在 `src/forge-shell/preload.ts` 白名单加一个 `videoStudio` 命
 | 多步骤流水线 | dsh-tool-workflow 编排脚本 / skill | 中 |
 | 多供应商抽象 | provider 域插件（仿 llm 域） | 高 |
 | 整屏改造主界面 | fork web-frontend（ADR-006） | 高（最后手段） |
+| 可选能力 / 不进主包分发 | 外部插件（§2.5 profile 装载） | 中（独立工程 + 一行 insert） |
 
 **判断口诀**：先槽位、再工具、再域、最后换脸。
 
@@ -182,6 +210,7 @@ preload 侧在 `src/forge-shell/preload.ts` 白名单加一个 `videoStudio` 命
 | 6 | 图标/资源随 nativeTheme 黑白双版 | forge-tray.ts |
 | 7 | 供应商 API Key 走环境变量，禁硬编码 | core-standards R-红线 |
 | 8 | 大文件产物走 spill-local，勿塞会话上下文 | boot.ts spill 配置 |
+| 9 | 外部插件的 peer 未链到宿主 → 插件被静默跳过（不崩，也不生效） | §2.5：先跑插件的 `scripts/link-peers.cjs`；启动日志有 `[dsh-profile]` 告警说明原因 |
 
 ---
 
