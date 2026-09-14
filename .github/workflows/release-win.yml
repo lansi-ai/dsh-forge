@@ -61,11 +61,20 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: powershell
         run: |
+          # 坑 66：GitHub 的 `shell: powershell` 包装会把 $ErrorActionPreference 设为 Stop，
+          # 而 `gh` 失败时往 stderr 写 → 变成**终止错误**，连后面的 `exit 0` 都跑不到
+          # （rc.3 实测：mac 抢先建 Release → 本步 `already exists` → 整个 Win 产物未上传）。
+          # 因此：显式降级 EAP + 先查后建 + stderr 一并吞掉。
+          $ErrorActionPreference = 'Continue'
           $tag = "${{ steps.version.outputs.tag }}"
           $prerelease = if ($tag -match '-[a-zA-Z]+\.') { '--prerelease' } else { '' }
-          gh release create $tag --title $tag `
-            --notes "Created automatically by release-win workflow." `
-            $prerelease --repo "$env:GITHUB_REPOSITORY" 2>$null; exit 0
+          gh release view $tag --repo "$env:GITHUB_REPOSITORY" 2>&1 | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title $tag `
+              --notes "Created automatically by release-win workflow." `
+              $prerelease --repo "$env:GITHUB_REPOSITORY" 2>&1 | Out-Null
+          }
+          exit 0
 
       - name: Align artifact names to latest.yml path (坑 41)
         run: node scripts/align-release-assets.cjs

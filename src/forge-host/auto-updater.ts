@@ -98,7 +98,14 @@ export interface AutoUpdaterHandle {
 const INITIAL_DELAY_MS = 20_000
 const TAG = '[dsh-updater]'
 
-/** 渠道 → electron-updater `channel`（stable 用 null 走默认 latest.yml）。 */
+/**
+ * 渠道 → electron-updater `channel`。
+ * - `stable`: null → 描述符走默认 `latest.yml`。
+ * - `rc`: 'rc' → 用于**按 tag 的预发布标识挑版本**（只认 `-rc.N`）；描述符先请求 `rc.yml`，
+ *   404 后 electron-updater 会**自动回退到 `latest.yml`**（`GitHubProvider.getLatestVersion`）。
+ *   故 CI 侧只需保证 `latest.yml` 随包上传，**不需要**额外产出 `rc.yml`／`latest-rc.yml`。
+ * 注：`allowPrerelease` 由 electron-updater 依当前版本自动推导（版本带预发布标识即为 true）。
+ */
 const CHANNEL_FEED: Record<Exclude<UpdaterChannel, 'off'>, string | null> = {
   stable: null,
   rc: 'rc',
@@ -216,7 +223,7 @@ export function createAutoUpdater(options: AutoUpdaterOptions): AutoUpdaterHandl
     }
   }
 
-  /** 按当前渠道同步 electron-updater 订阅（stable → 默认 latest.yml，rc → latest-rc.yml）。 */
+  /** 按当前渠道同步 electron-updater 订阅（stable → null/默认 `latest.yml`；rc → `'rc'`，见 CHANNEL_FEED）。 */
   const syncChannelFeed = (): void => {
     if (currentChannel === 'off') return
     autoUpdater.channel = CHANNEL_FEED[currentChannel]
