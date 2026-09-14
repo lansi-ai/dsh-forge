@@ -26,7 +26,8 @@ import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { resolveDshHome } from './forge-home-paths.js'
 import { log } from './log.js'
-import { inspectExternalPackage, type ExternalPackage } from './plugin-package.js'
+import { locateExternalPackage, inspectExternalPackage, type ExternalPackage } from './plugin-package.js'
+import { ensurePeerSupply, unimportablePlugins } from './peer-fallback.js'
 import type { BootBundleDecl } from './boot-graph.js'
 import type { PatchOptions } from '@deepseek-ai/cordis-plugin-include' with { 'resolution-mode': 'import' }
 
@@ -41,7 +42,8 @@ const PROFILE_MANIFEST = {
   dsh: { profile: { bundles: [], patchReload: 'startup' } },
 }
 
-const PATCH_TEMPLATE = `# dsh-forge 外部插件装载点（用户补丁层，在每个 bundle 层之后应用）。
+/** 用户补丁层模板（首次初始化时写出；`--install-plugin` 也用它保证首次内容一致）。 */
+export const PROFILE_PATCH_TEMPLATE = `# dsh-forge 外部插件装载点（用户补丁层，在每个 bundle 层之后应用）。
 #
 # 往这里加一行 insert，外部插件就会被装载；删掉这一行即卸载。文件为空或只剩
 # 注释会导致启动失败，要停用本层就写 []。
@@ -87,7 +89,7 @@ export function resolveForgeProfile(): ForgeProfile {
     return { dir, patchPath, patchFiles: [], packages: [], entryByName: new Map() }
   }
   const patchFiles = collectPatchFiles(dir, patchPath)
-  const packages = discoverPackages(patchFiles, root)
+  const packages = discoverPackages(patchFiles, root, dir)
   return { dir, patchPath, patchFiles, packages, entryByName: new Map(packages.map((one) => [one.name, one.entry])) }
 }
 
@@ -107,11 +109,17 @@ export function forgeProfile(): ForgeProfile {
   return cachedProfile
 }
 
-/** 外部包声明的浏览器半（供客户端图谱装载）。 */
+/**
+ * 外部包声明的浏览器半（供客户端图谱装载）。
+ *
+ * 装载前自检失败的包要一并剔除：图谱在页面加载时重建（晚于 boot 的自检），不剔
+ * 就会留下"设置页在、宿主半没装"的半截状态。
+ */
 export function externalClientDecls(profile: ForgeProfile): BootBundleDecl[] {
+  const broken = unimportablePlugins()
   const decls: BootBundleDecl[] = []
   for (const pkg of profile.packages) {
-    if (pkg.client !== undefined) decls.push(pkg.client)
+    if (pkg.client !== undefined && !broken.has(pkg.name)) decls.push(pkg.client)
   }
   return decls
 }
@@ -140,6 +148,33 @@ export function rewriteInsertNames(patches: readonly PatchOptions[], profile: Fo
   return rewritten
 }
 
+/**
+ * 删掉指定裸包名的插入行（装载前自检失败的插件 = 等同没装）。
+ *
+ * 与 `rewriteInsertNames` 分工：后者把**可装载**的裸名换成入口绝对路径，本函数把
+ * **不可装载**的行摘掉。少了这一步，那行裸名会落到上游 Loader 手里——它解析不到，
+ * 而 `assertEntriesActivated` 对任一未激活条目都回滚整棵树，应用直接起不来。
+ *
+ * 只动 `insert`：覆盖补丁里的 `name` 是匹配条件，删它会误伤别的行。
+ *
+ * @param patches - 已加载的补丁层。
+ * @param names - 要摘除的裸包名。
+ * @returns 被删除的行数（供启动日志展示）。
+ */
+export function dropInsertRowsByName(patches: readonly PatchOptions[], names: ReadonlySet<string>): number {
+  if (names.size === 0) return 0
+  let dropped = 0
+  for (const patch of patches as LoosePatch[]) {
+    if (!Array.isArray(patch.insert)) continue
+    patch.insert = (patch.insert as LooseEntry[]).filter((entry) => {
+      const matched = typeof entry.name === 'string' && names.has(entry.name)
+      if (matched) dropped += 1
+      return !matched
+    })
+  }
+  return dropped
+}
+
 // ── 骨架 ───────────────────────────────────────────────────────────────────
 
 /** 建目录 + 最小清单 + 补丁模板（缺什么补什么，已存在一律不碰）。 */
@@ -151,7 +186,7 @@ function ensureProfileSkeleton(dir: string, patchPath: string): void {
     log.info(`[dsh-profile] 已创建外部插件 profile 清单：${manifestPath}`)
   }
   if (!existsSync(patchPath)) {
-    writeFileSync(patchPath, PATCH_TEMPLATE, 'utf8')
+    writeFileSync(patchPath, PROFILE_PATCH_TEMPLATE, 'utf8')
     log.ok(`[dsh-profile] 已创建外部插件装载点：${patchPath}`)
   }
 }
@@ -202,8 +237,12 @@ function bundlePatchFile(bundle: string, dir: string): string | undefined {
 
 // ── 外部包发现 ─────────────────────────────────────────────────────────────
 
-/** 扫描各补丁层的 insert 行，挑出「应用自身解析不到」的裸包名并逐个体检。 */
-function discoverPackages(patchFiles: readonly string[], profilesRoot: string): ExternalPackage[] {
+/** 扫描各补丁层的 insert 行，挑出「应用自身解析不到」的裸包名，先供给 peer 再逐个体检。 */
+function discoverPackages(
+  patchFiles: readonly string[],
+  profilesRoot: string,
+  profileDir: string,
+): ExternalPackage[] {
   const candidates = new Set<string>()
   for (const file of patchFiles) {
     for (const name of insertedNames(file)) {
@@ -211,8 +250,15 @@ function discoverPackages(patchFiles: readonly string[], profilesRoot: string): 
     }
   }
   const packages: ExternalPackage[] = []
-  for (const name of candidates) {
-    const verdict = inspectExternalPackage(name, profilesRoot)
+  for (const name of [...candidates].sort()) {
+    const located = locateExternalPackage(name, profilesRoot, profileDir)
+    if (located === undefined) {
+      log.warn(`[dsh-profile] 外部插件 ${name} 不可装载，已跳过：两个装载锚点都解析不到`)
+      continue
+    }
+    // 供给必须排在体检之前：体检把"peer 解析不到"直接判死，而供给正是补这一步。
+    ensurePeerSupply(located)
+    const verdict = inspectExternalPackage(name, profilesRoot, profileDir)
     if (verdict.ok) {
       packages.push(verdict.pkg)
       log.ok(`[dsh-profile] 外部插件已装载：${name} (${verdict.pkg.dir})`)

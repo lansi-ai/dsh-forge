@@ -18,7 +18,7 @@ import { writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { app } from 'electron'
 import { log } from './log.js'
 import { resolveUserDataRoot } from './forge-home-paths.js'
-import { forgeProfile, rewriteInsertNames } from './profile-plugins.js'
+import { dropInsertRowsByName, forgeProfile, rewriteInsertNames } from './profile-plugins.js'
 import type { PatchOptions } from '@deepseek-ai/cordis-plugin-include' with { 'resolution-mode': 'import' }
 
 // 运行时数据根目录（M4-a1·打包路径适配）：
@@ -484,11 +484,14 @@ function buildPatches(serveMode: boolean, servePort: number): PatchOptions[] {
  * 加载外部插件补丁层（`$DSH_HOME/profiles/dsh-forge`）。
  *
  * 补丁**解析**走官方 `loadOverlayPatches`，`!!js` 求值与相对路径锚定因此与上游
- * 逐字一致；本函数只多做一件事：把插入行里的**裸包名**改写成入口绝对路径。
+ * 逐字一致；本函数另外做两件事：
  *
- * 为什么必须改写：dsh-forge 打包后把 `bareModuleBaseUrl` 固定指向 asar 内的
- * node_modules，裸名永远够不到 `$DSH_HOME/profiles/node_modules`；而**绝对路径**
- * 上游原生支持（`mountRootInclude` 会把它转成 file URL 直取）。
+ *   1. 把插入行里的**裸包名**改写成入口绝对路径。打包后 `bareModuleBaseUrl` 固定
+ *      指向 asar 内的 node_modules，裸名永远够不到 `$DSH_HOME/profiles/node_modules`；
+ *      而**绝对路径**上游原生支持（`mountRootInclude` 会把它转成 file URL 直取）。
+ *   2. 装载前自检（`probeExternalEntry`）：体检只证明 peer「名字能解析」，证明不了
+ *      供给出来的模块**真能被 import**（打包态那是跨 asar 的 re-export）。自检失败的
+ *      插件在此就摘掉插入行——等同没装，绝不让那行裸名落到 Loader 手里回滚整棵树。
  *
  * 任何一层失败都只跳过该层并告警，绝不阻断启动。
  *
@@ -507,6 +510,13 @@ async function externalPluginPatches(): Promise<PatchOptions[]> {
       log.error(error)
     }
   }
+  const { probeExternalEntry } = await import('./peer-fallback.js')
+  const unusable = new Set<string>()
+  for (const pkg of profile.packages) {
+    if (!(await probeExternalEntry(pkg))) unusable.add(pkg.name)
+  }
+  const dropped = dropInsertRowsByName(layers, unusable)
+  if (dropped > 0) log.warn(`[dsh-profile] 已摘除 ${String(dropped)} 条不可装载的插入行`)
   const rewritten = rewriteInsertNames(layers, profile)
   if (profile.packages.length > 0) {
     log.ok(`[dsh-profile] 外部插件层已合并：${String(profile.packages.length)} 个包，改写插入行 ${String(rewritten)} 条`)

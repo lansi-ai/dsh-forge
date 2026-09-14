@@ -59,9 +59,11 @@ if (!app.isPackaged) {
 migrateLegacyUserDataSync()
 
 // 解析启动参数（Step 6·--serve 兼容模式 / 零端口红线切换）。
-// Electron 把命令行参数挂在 app.commandLine，argv[1] 是 script 路径，
-// parseArgv 内部会跳过前两项，因此直接传 process.argv 即可。
-const launchOptions = parseArgv(process.argv)
+// 偏移量按运行形态给：dev（`electron .`）argv = [electron, ., ...args] 跳过 2；
+// 打包版 argv = [exe, ...args]（**没有 script 项**）跳过 1。多跳一项就会把唯一那个
+// 参数整个吃掉——`--hidden`（开机自启静默）/ `--data-dir` / `--install-plugin`
+// 在打包版会全部静默失效。
+const launchOptions = parseArgv(process.argv, app.isPackaged ? 1 : 2)
 log.phase('DSH Forge 启动')
 if (subprocessRunAsNode.patched) {
   log.info('[dsh-subprocess-adapter] 已为 Electron 宿主注入子进程 runner 运行时（ELECTRON_RUN_AS_NODE）')
@@ -112,6 +114,17 @@ if (isCircuitBroken()) {
     app.quit()
   } else {
     app.on('second-instance', (_event, commandLine) => {
+      // --install-plugin：运行中的实例无法热装载插件树（外部插件只在进程启动时发现），
+      // 明确提示"先退出"，而不是装作装上了。
+      if (commandLine.some((arg) => arg === '--install-plugin' || arg.startsWith('--install-plugin='))) {
+        log.warn('[dsh-install] 已有实例在运行：请先完全退出 DSH Forge，再执行 --install-plugin')
+        const [running] = BrowserWindow.getAllWindows()
+        if (running !== undefined) {
+          if (running.isMinimized()) running.restore()
+          running.focus()
+        }
+        return
+      }
       // M3-b1：从 second-instance 参数中提取 dsh:// URL 并路由
       const dshUrl = extractDshUrlFromArgv(commandLine)
       if (dshUrl !== null) {
@@ -339,6 +352,32 @@ function createWindow(): BrowserWindow {
   return win
 }
 
+/**
+ * 执行 `--install-plugin`：成功则继续正常启动（装完即用），失败弹框并退出。
+ *
+ * 失败必须**显式可见**：用户跑的是"一条命令装插件"，静默失败后照常启动最容易被理解
+ * 成"装上了但没生效"。
+ *
+ * @param spec - 插件来源（`github:owner/repo[@ref]` 或本地目录）。
+ * @param home - 已就绪的 `$DSH_HOME`。
+ */
+async function installPluginFromArgv(spec: string, home: string): Promise<void> {
+  log.phase('插件安装')
+  log.info(`[dsh-install] 安装来源：${spec}`)
+  try {
+    const { installExternalPlugin } = await import('../forge-host/plugin-install.js')
+    const result = await installExternalPlugin(spec, home)
+    log.ok(`[dsh-install] 已安装 ${result.name}@${result.version} → ${result.dir}`)
+    log.info(result.rowAdded ? '[dsh-install] 装载行已写入，本次启动即生效' : '[dsh-install] 装载行已存在，按已装处理')
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    log.error('[dsh-install] 安装失败:', error)
+    const { dialog } = await import('electron')
+    dialog.showErrorBox('插件安装失败', message)
+    app.exit(1)
+  }
+}
+
 /** 主进程启动流程（仅当未熔断时调用）。 */
 async function bootstrap(): Promise<void> {
   try {
@@ -382,6 +421,14 @@ async function bootstrap(): Promise<void> {
     if (!launchOptions.hidden) {
       createStartupSplash()
       if (splashDemo) startSplashDemo()
+    }
+
+    // 0.65 外部插件一键安装（--install-plugin <spec>）：**必须在 boot 之前**——外部
+    // 插件只在进程启动时被发现，装在这里就意味着「装完本次启动即可用」，用户不必再
+    // 重启一次。零外部依赖：下载 / 解包 / 落位 / 写装载行全在宿主进程内完成，用户机器
+    // 上不需要 Node、pnpm 或官方 dsh CLI（见 forge-host/plugin-install.ts）。
+    if (launchOptions.installPlugin !== undefined) {
+      await installPluginFromArgv(launchOptions.installPlugin, dataHome.home)
     }
 
     // 1. 协议注册（必须在 boot 前：boot 期间可能触发 dsh-ui:// 加载）
