@@ -127,14 +127,57 @@ window.__ModuleLoader__.load({
 
     /**
      * 跨插件面板操作服务（ctx.layout，对齐官方 0.1.5 ILayout）。
+     *
+     * selectPanel/beginNavigation 是 0.1.5 uiWorkspace 导航契约的一部分：官方
+     * UiWorkspaceService.openSession/openWorkspace/forkSession 内部会调它们
+     * （selectPanel(null) 回会话面板 + beginNavigation() 取取消信号）。桌面布局接管
+     * root 槽位时若漏这两个方法，消费方一调用即 TypeError——实机 2026-09-14
+     * 「选择/添加工作区」直接弹「无法打开文件夹 / workspaceNavigation.openWorkspace
+     * is not a function」（调用链：ui-conversation 的 hero `selectWorkspace` →
+     * uiWorkspace.openWorkspace → ctx.layout.beginNavigation 缺失）。
+     * 桌面 AppFrame 恒渲染 conversation 主面板（无官方 main keyed 面板切换层），
+     * 故 selectPanel 只认 null/conversation，其余 key 按官方语义抛错。
+     *
      * openRightbar 为报告式 API：占用方上报 track（是否保留轨道列）与
      * fullscreen（全视口覆盖、隐藏外层手柄）。
      */
     class LayoutController {
       #panels
+      /** 在途异步导航（官方 beginNavigation 语义：新导航/有效面板选择/卸载即中止）。 */
+      #navigation
 
       attachPanels(actions) {
         this.#panels = actions
+      }
+
+      /**
+       * 选中全局中央面板；`null` 表示回到会话面板且不改变当前会话。
+       * @param panelId 已注册的 main key，或 null。
+       * @throws 非 null/conversation 的 key（桌面无 main 面板层）——保留当前选择。
+       */
+      selectPanel(panelId) {
+        if (panelId !== null && panelId !== 'conversation') {
+          throw new Error(`layout.selectPanel: main panel "${panelId}" is not registered`)
+        }
+        this.#navigation?.abort()
+        this.#navigation = undefined
+      }
+
+      /**
+       * 开始一次异步导航，取代先前在途导航。
+       * @returns 被下一次导航 / 有效面板选择 / 布局卸载中止的信号。
+       */
+      beginNavigation() {
+        this.#navigation?.abort()
+        const controller = new AbortController()
+        this.#navigation = controller
+        return controller.signal
+      }
+
+      /** 布局卸载时作废在途导航（对齐官方 LayoutController.dispose）。 */
+      dispose() {
+        this.#navigation?.abort()
+        this.#navigation = undefined
       }
 
       toggleSidebar() {
@@ -626,6 +669,7 @@ window.__ModuleLoader__.load({
       return () => {
         offThemeChange()
         presenter.dispose()
+        layout.dispose()
         disposePanelInfo()
         disposeRegistration()
         disposeService()

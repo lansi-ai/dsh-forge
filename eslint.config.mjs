@@ -41,6 +41,7 @@ const BROWSER_GLOBALS = {
   TextDecoder: 'readonly',
   Uint8Array: 'readonly',
   AbortController: 'readonly',
+  AbortSignal: 'readonly',
   Response: 'readonly',
   Request: 'readonly',
   Headers: 'readonly',

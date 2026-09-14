@@ -93,9 +93,16 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 工作区导航与目录 UI 能力服务（契约 = 官方 UiWorkspace 六方法）。
+     * 工作区导航与目录 UI 能力服务（契约 = 官方 0.1.5 `UiWorkspaceService` 全方法面）。
      * 语义要点：connectWorkspace 是「复用-or-新建」——优先复用该工作区内已存在的
      * 空白会话（且未被归档、仍挂在 workspace.sessionIds 上），否则新建。
+     *
+     * ⚠ 服务面必须与官方**逐方法**对齐：本件顶替官方 ui-workspace 后，官方消费方
+     *   直接调这些方法——ui-conversation 的 hero `selectWorkspace` →
+     *   `openWorkspace(id, cb)`、header `open` → `openSession(id)`；ui-agent-preset 的
+     *   `startSession()`；directory-picker-native 的 `pickDirectory()`。0.1.5 的
+     *   openSession/openWorkspace/forkSession 曾漏实现 →「选择/添加工作区」当场报
+     *   `workspaceNavigation.openWorkspace is not a function`（实机 2026-09-14）。
      */
     class DesktopWorkspaceNavService extends Service {
       directoryPicker
@@ -103,6 +110,8 @@ window.__ModuleLoader__.load({
       sessions
       /** 同一工作区的并发 connect 去重表。 */
       connecting = new Map()
+      /** 服务生命周期信号：随插件卸载中止在途导航（对齐官方同名 lifetime）。 */
+      lifetime = new AbortController()
 
       /**
        * @param ctx 客户端根 Context。
@@ -137,6 +146,33 @@ window.__ModuleLoader__.load({
         return attempt
       }
 
+      /** 切到指定会话并回到会话面板（官方 `UiWorkspaceService.openSession`）。 */
+      openSession(sessionId) {
+        this.sessions.open(sessionId)
+        this.ctx.layout.selectPanel(null)
+      }
+
+      /**
+       * 「连接（复用-or-新建）会话 → 交回 owner → 切到该会话」的完整导航（官方同名语义）。
+       * 连接期间若被后续导航或服务卸载抢先（signal 已中止），放弃提交 UI 迁移——
+       * 底层会话创建不取消；`beforeOpen(sessionId)` 供消费方在切换前搬移草稿/附件。
+       */
+      async openWorkspace(workspaceId, beforeOpen) {
+        const navigation = AbortSignal.any([this.ctx.layout.beginNavigation(), this.lifetime.signal])
+        const isCurrent = () => !navigation.aborted
+        const sessionId = await this.connectWorkspace(workspaceId)
+        if (!isCurrent()) return
+        beforeOpen?.(sessionId)
+        if (isCurrent()) this.openSession(sessionId)
+      }
+
+      /** 分叉会话并切到子会话（官方 `UiWorkspaceService.forkSession`）。 */
+      async forkSession(sessionId) {
+        const navigation = AbortSignal.any([this.ctx.layout.beginNavigation(), this.lifetime.signal])
+        const childId = await this.sessions.fork({ sessionId, increaseTitle: true })
+        if (!navigation.aborted) this.openSession(childId)
+      }
+
       startSession(workspaceId) {
         const workspace = this.workspaces.list.getSnapshot()
         const sessions = this.sessions.list.getSnapshot()
@@ -150,11 +186,10 @@ window.__ModuleLoader__.load({
         const target = workspaceId ?? currentWorkspaceId ?? recent
         if (target === undefined) {
           this.sessions.clear()
+          this.ctx.layout.selectPanel(null)
           return
         }
-        this.connectWorkspace(target).then((sessionId) => {
-          this.sessions.open(sessionId)
-        }, (reason) => {
+        this.openWorkspace(target).catch((reason) => {
           console.warn('new session failed:', reason)
         })
       }
@@ -217,6 +252,7 @@ window.__ModuleLoader__.load({
         reconcile()
         return () => {
           disposed = true
+          this.lifetime.abort()
           disposeSessions()
           disposeWorkspaces()
         }
@@ -2545,7 +2581,9 @@ window.__ModuleLoader__.load({
       )
     }
 
-    exports.inject = ['slots', 'sessions', 'workspaces', 'locale', 'remote', 'remote.directoryPicker']
+    // `layout` 必须声明：服务面 openSession/openWorkspace/forkSession 要经
+    // this.ctx.layout.selectPanel / beginNavigation 提交导航（官方 ui-workspace 同样声明）。
+    exports.inject = ['slots', 'sessions', 'workspaces', 'locale', 'remote', 'remote.directoryPicker', 'layout']
 
     // W2 导出钩子：派生纯函数供「node:test 单测」与之共享同一份真源（不复制避免漂移），
     // 亦供 W3 Rows / W4 Browser 复用；生产运行时 cordis 只消费 inject/apply，此面纯只读。
@@ -2624,7 +2662,7 @@ window.__ModuleLoader__.load({
       // ⑤ 动作注入面：全部薄转发官方 domain 服务，数据面零新增
       const browserInjected = () => ({
         startSession: (workspaceId) => { uiWorkspace.startSession(workspaceId) },
-        open: (sessionId) => { sessions.open(sessionId) },
+        open: (sessionId) => { uiWorkspace.openSession(sessionId) },
         searchSessions,
         searchResultLimit: sessions.searchResultLimit,
         renameSession: async (sessionId, title) => {
@@ -2634,9 +2672,7 @@ window.__ModuleLoader__.load({
           if (!result.ok) throw new Error(result.error.message)
         },
         forkSession: (sessionId) => {
-          sessions.fork({ sessionId, increaseTitle: true }).then((childId) => {
-            sessions.open(childId)
-          }).catch(() => {})
+          uiWorkspace.forkSession(sessionId).catch(() => {})
         },
         renameWorkspace: async (workspaceId, title) => { await workspaces.rename(workspaceId, title) },
         deleteWorkspace: async (workspaceId) => { await workspaces.delete(workspaceId) },
