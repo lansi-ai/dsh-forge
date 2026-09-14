@@ -1,3 +1,8 @@
+// Electron 宿主子进程运行时适配：必须在任何模块首次 import node:child_process 之前求值，
+// 因此它是入口的第一条 import（原因见 subprocess-run-as-node.ts 模块注释）。
+import { installSubprocessHook, subprocessRunAsNode } from '../forge-host/subprocess-run-as-node.js'
+import { ensureHostConsole } from '../forge-host/win32-console.js'
+
 import { app, BrowserWindow, nativeImage, nativeTheme } from 'electron'
 import { join } from 'node:path'
 import { registerDshUiProtocol, registerDshUiScheme } from './dsh-ui-protocol'
@@ -58,6 +63,25 @@ migrateLegacyUserDataSync()
 // parseArgv 内部会跳过前两项，因此直接传 process.argv 即可。
 const launchOptions = parseArgv(process.argv)
 log.phase('DSH Forge 启动')
+if (subprocessRunAsNode.patched) {
+  log.info('[dsh-subprocess-adapter] 已为 Electron 宿主注入子进程 runner 运行时（ELECTRON_RUN_AS_NODE）')
+}
+// 控制台适配：上游 Windows 进程原语创建 pwsh/cmd 时不带控制台标志，其设计前提是
+// 「子进程共享宿主控制台」——官方 CLI/web 跑在终端里天然成立，Electron（GUI 子系统）没有控制台，
+// 目标进程会被 Windows 新建一个**可见**控制台窗口（工具调用时闪出的 cmd 黑框），受限令牌下还会
+// 死在 DLL 初始化（0xC0000142）。先在主进程把控制台备好（挂父终端 / 否则自建并隐藏），
+// runner 再经 `-r` 预载挂到它（见 forge-host/win32-console.ts）。
+const hostConsole = ensureHostConsole('main')
+if (hostConsole.mode === 'failed') {
+  log.warn(
+    `[dsh-subprocess-adapter] 控制台适配失败：${hostConsole.detail ?? '未知原因'}`
+    + '（控制台类工具可能闪出 cmd 窗口）',
+  )
+} else if (hostConsole.mode === 'alloc') {
+  log.info(`[dsh-subprocess-adapter] 已为主进程分配隐藏控制台（子进程将共用，不新建可见窗口）${hostConsole.detail === undefined ? '' : ` — ${hostConsole.detail}`}`)
+} else if (hostConsole.mode === 'attach') {
+  log.info('[dsh-subprocess-adapter] 主进程已挂接到父进程控制台（子进程共用，不新建窗口）')
+}
 if (launchOptions.serve) {
   log.warn(`[dsh-forge] 启动参数：--serve=${launchOptions.servePort}（兼容模式，第三方 web 路由走 HTTP 原义）`)
 } else {
@@ -427,6 +451,22 @@ async function bootstrap(): Promise<void> {
       inventory.bindCordisInventoryHost(hostCtx as { get(name: string): unknown })
     } catch (error) {
       log.error('[dsh-boot] 插件清单宿主绑定失败（插件列表将缺失宿主侧插件）:', error)
+    }
+
+    // 3.7 Electron 子进程目标环境适配（坑 61 续）：workspace-write 下沙箱把目标命令包成
+    // `[electron.exe, windows-acl runner, …, --, <真命令>]`，那一层由 subprocess runner 用
+    // koffi CreateProcess 拉起——`child_process` 补丁盖不到，但它的环境来自 `spec.env`
+    // （上游 `targetEnvironment` = `childEnv(spec.env)`），故在 ctx.subprocess 启动方法上补一项。
+    // 绑定失败/无需适配仅告警不阻断启动（非 Electron 或已是 Node 模式时为 false）。
+    try {
+      const subprocess = (hostCtx as { get(name: string): unknown }).get('subprocess')
+      if (installSubprocessHook(subprocess)) {
+        log.info('[dsh-subprocess-adapter] 已在 subprocess 启动面注入目标进程运行时（覆盖沙箱包裹层）')
+      } else {
+        log.warn('[dsh-subprocess-adapter] subprocess 目标环境适配未挂载（服务不可用或无需适配）')
+      }
+    } catch (error) {
+      log.error('[dsh-subprocess-adapter] subprocess 目标环境适配失败:', error)
     }
 
     // 4. 连接 IPC 桥与 Cordis Host 的 0.1.2 传输背板（connection + typertGateway）
