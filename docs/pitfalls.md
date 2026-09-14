@@ -359,6 +359,8 @@
 34. **自研件顶替官方包后，服务面的差分要「按当前安装版本」逐方法做**：`inject` 数组 + `super(ctx, 'x')` 那个类的方法名清单，与自研件对比；官方加方法不会报错、不会告警，**只等你点到那条路径**。报错文案常常指向别的领域（如「无法打开文件夹」），**认异常正文里的 `xxx is not a function` 属性名**才是真线索（坑 62）。
 35. **「宿主进程有没有控制台」是 Windows 工具链的隐性前提**：GUI 子系统宿主（Electron）不会继承控制台，而多数 Windows 进程原语按「共享宿主控制台」设计——宿主缺控制台时，控制台类子进程会被系统**新建窗口**（闪框），受限令牌下还会死在 DLL 初始化（`0xC0000142`）。排查顺序 = 先量**创建者**的 `GetConsoleWindow` / `GetConsoleProcessList`，再量目标的（子进程 `count===1` + `visible===1` 就是「新建了独立控制台」的指纹）；`windowsHide` 对 GUI 应用无效，别当捷径（坑 63）。
 36. **幂等脚本的「已存在」判定必须只看生效内容**：注释、示例、模板都是假阳性高发区（本例脚本拿 `includes('id: x')` 判定，被自己写出的模板注释骗到）。推论两条：① **装完要复核结果文件**，不能只信脚本打印的"完成"；② 优先用**官方校验脚本**交叉验证（如 `verify:profile-plugins`），而不是肉眼（坑 64）。
+37. **Agent 沙箱拒绝写 `.git/objects/**` → 一切 git 写操作必须交用户执行**：`git init` 能建目录、`git add` 落首个 blob 就 `Permission denied`（工作区内外的仓库**都一样**），且**申请授权（approval）不解除**。所以 `add/commit/tag/push` 在 Agent 侧一律做不到——**别反复重试，也别以为换个目录就行**；正确做法 = Agent 把命令/幂等脚本（含"node_modules 零泄漏"这类断言）准备好放在工作区，由用户在终端跑，再用 `ls-remote` 回验（坑 65）。
+38. **发布/更新类故障按「产物清单 → CI 运行 → 客户端解析」三层取证**：先看 Release 资产名（缺哪个描述符一目了然——本次"只有 10 个、全是 mac"一步指向 CI），再看各 step 的 `conclusion`（失败步 + 后续全 skipped = 产物没上传），最后读客户端 provider 源码确认它**真正请求的文件名**（`rc.yml` → 404 后回退 `latest.yml`，**从不是 `latest-rc.yml`**）。**别从错误文案反推需求**；修完 CI 的补跑必须用 `workflow_dispatch`（`Re-run failed jobs` 固定旧 commit 的 YAML，`run_attempt` +1 可判别）（坑 66）。
 
 ## 结论
 
@@ -959,5 +961,37 @@
   2. **装完要复核结果文件**，不能只信脚本打印的"完成"——本次正是靠 `Get-Content` 复核补丁层才发现（脚本输出与真实状态相反）。
   3. **用官方校验脚本交叉验证**：`verify:profile-plugins` 直接检查"裸名改写是否生效 + 模块能否 import"，比肉眼靠谱；装完就跑它。
   4. 安装类脚本的"三步"里，**建链接成功 ≠ 安装成功**：装载点是补丁层的 insert 行，链接只是前置条件——排查「装了不生效」时先看**补丁层有没有生效行**，再看链接。
+
+---
+
+## 坑 65：Agent 沙箱拒绝写 `.git/objects/**` —— git 写操作在沙箱内一律失败（授权也不解除）
+
+- **现象**：在 Agent 沙箱内执行 `git add` 稳定失败（`error: unable to write new index file` / `Permission denied`），路径指向 `E:\Projects\DSH\desktop\.git\objects\…`；换到**工作区外**的插件仓（`E:\Projects\DSH\plugins\dsh-llm-app-credentials\.git\objects\…`）**同样被拒**。关键组合是：`git init` **能成功**（只建目录结构），一旦要落 blob / 写索引就被拦 → 三次尝试都停在同一处，`requires_approval` 提权**无效**。
+- **根因**：TRAE 沙箱的文件写入白名单**不覆盖 `.git` 内部对象存储**——且它与「工作区外路径被拒」**不是同一类**（工作区**内**的 `.git` 一样被拒）。定性判据 = 只读 git 命令全部正常（`rev-parse --is-inside-work-tree` / `status` / `log` / `show` 均可），HEAD 与暂存区干净、无残留锁 → **环境硬边界，不是仓库损坏**。
+- **解法**（2026-09-14 实测）：Agent 侧只做**只读核查 + 备好幂等脚本**，凡写 `.git` 的动作（commit / amend / tag / push）**交给用户在终端执行**：
+  1. 把命令或 `.tmp/*.cjs` 脚本落在**工作区内**（脚本要带断言，如「暂存区出现 `node_modules` 即中止」）；
+  2. 用户在自己终端跑；`git push` 退出码不可信（沙箱会伪报 credential store 失败，坑 44）→ 以 **`git ls-remote`** 回验；
+  3. 推送成功的**唯一判据** = 远端 `refs/heads/main` 的 SHA 与本地 `git rev-parse HEAD` **逐字符一致**（本次 `2c94152c…` 双侧相同）。
+- **复盘要点**：
+  1. **环境边界要尽早定性，别连环重试**：`git init` 成功 + `git add` 失败这一个组合就足以判定，继续换目录/换仓库是浪费。（与坑 0 / 38 / 42 同族：先看被拒路径再动手。）
+  2. **approval 不等于解除沙箱**：部分限制是硬编码白名单，走授权流程不放行；「改用工作区外目录」这条经验在此**不适用**（内外都试过）。
+  3. **交付物形态要顺应边界**：与其空手交回"我做不了"，不如交**幂等脚本 + 断言 + 复核判据**——用户一条命令跑完，且失败点自解释。
+
+---
+
+## 坑 66：Windows 发布任务因「Release 已存在」失败，整个 Win 产物未上传（`gh` + PowerShell `EAP=Stop`）
+
+- **现象**：`v0.1.1-rc.3` 发布后应用内「检查更新」报
+  `Cannot find latest.yml in the latest release artifacts (…/releases/download/v0.1.1-rc.3/latest.yml): HttpError: 404`。
+  查 Release 资产：**只有 10 个、全是 mac**（`latest-mac.yml` 在，`latest.yml` 与全部 Windows 产物都不在），而 rc.2 / rc.1 / alpha.9 都是 15 个；CI 里 `release-win` = **failure**、`release-mac` = success。
+- **根因（两层）**：
+  1. **失败步** = `Ensure release exists (idempotent)`：mac 与 win 并发，**mac 先建了 Release**（该 Release 的 `body` 正是 "Created automatically by release-mac workflow."），win 的 `gh release create` 撞「已存在」→ `HTTP 422: Validation Failed` 写 stderr；GitHub 对 `shell: powershell` 的包装把 **`$ErrorActionPreference` 设为 `Stop`**，这条 stderr 遂升级为**终止错误**（日志 `FullyQualifiedErrorId : NativeCommandError`），**连后面的 `; exit 0` 都跑不到** → 该步失败 → 后续「Align / SHA256SUMS / Upload」全部 skipped。对照 mac 同一步用 bash `|| true`，天然容错故成功。
+  2. **客户端为何"就缺 latest.yml"**：`GitHubProvider.getLatestVersion()` 先请求 `rc.yml`（channel='rc'），404 后**因 `allowPrerelease` 为真自动回退请求 `latest.yml`**（版本带预发布标识 → electron-updater 自动置 `allowPrerelease=true`）；两者皆无才报错——**真正缺的就是那一份 `latest.yml`**。
+- **解法**（2026-09-14，已实机闭环）：`release-win.yml` 该步改为「**显式 `$ErrorActionPreference='Continue'` + 先 `gh release view` 再按需 create + stderr `2>&1 | Out-Null`**」，已存在即跳过 create。补传：推送修复后用 **`workflow_dispatch`** 重跑（UI: Actions → `release-win` → Run workflow → `main`）→ 运行 `34818075936` success、资产 **10 → 15**、`latest.yml` 就位、应用内检查更新恢复（显示"已是最新版本"）。
+- **复盘要点**：
+  1. **PowerShell 步骤里"吞 stderr"不能只写 `2>$null`**：`shell: powershell` 的包装设了 `$ErrorActionPreference='Stop'`，stderr 会升级为终止错误，`2>$null` 与 `; exit 0` 都救不了。要么显式降级 EAP，要么**先判定再执行**（不产生错误），要么 `cmd /c … 2>nul`。
+  2. **并行 workflow 各自"幂等创建"同一资源时，幂等实现必须比并发更狠**：只要有一边把「已存在」当错误就会随机失败（本次 mac(bash) 赢 / win(PS) 输）；可用 Release `body`（"Created automatically by release-X workflow."）反查谁先建。
+  3. **「重跑」≠「跑新代码」**：`Re-run failed jobs` 固定用该次运行的 commit 与 YAML（`run_attempt` +1 可判别；本次 attempt=2 仍 422 即是此因）。修 CI 必须走 `workflow_dispatch` 或新 tag。
+  4. **更新链排障先读产物清单，再读客户端代码，别从错误文案反推需求**：`GET /releases/tags/<tag>` 的资产名列表一步就能指向"产物没上传"；而 `Cannot find latest.yml` 曾被误读成"缺 `latest-rc.yml`"（**客户端从不请求该名**，坑档更正）。
 
 
