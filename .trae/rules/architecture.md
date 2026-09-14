@@ -8,7 +8,7 @@ alwaysApply: true
 
 ## 01. 目录映射与文件放置规则
 - `src/forge-shell/`：Electron 应用外壳（`main.ts` 入口、BrowserWindow 创建、`dsh-ui://` 协议注册、单例锁、崩溃 relaunch）。禁止写业务逻辑与 Host 装配。
-- `src/forge-host/`：宿主装配（`boot()` desktop profile）、`forge-runtime`（roster/manifest 供给 `__DSH_BOOT__`）、IPC 桥宿主端（unary 表分发 + respond 回填 + 帧路由 per-window）、**桌面能力模块**（`forge-api.ts` 提供 `ctx.desktop` 聚合、`forge-tray.ts` / `forge-notify.ts`，经 boot() prepare 注入——M2 当前阶段以**项目内模块**存在，插件包化后再迁出）、**外部插件装载层**（`profile-plugins.ts` / `plugin-package.ts`：解析 `$DSH_HOME/profiles/dsh-forge` 用户补丁层 → 体检外部包 → 把插入行裸名改写为入口绝对路径，装坏的包只跳过不连坐；ADR-004「bundle 即分发面」的落地，见 `docs/extension-guide.md` §2.5）。
+- `src/forge-host/`：宿主装配（`boot()` desktop profile）、`forge-runtime`（roster/manifest 供给 `__DSH_BOOT__`）、IPC 桥宿主端（unary 表分发 + respond 回填 + 帧路由 per-window）、**桌面能力模块**（`forge-api.ts` 提供 `ctx.desktop` 聚合、`forge-tray.ts` / `forge-notify.ts`，经 boot() prepare 注入——M2 当前阶段以**项目内模块**存在，插件包化后再迁出）、**外部插件装载层**（`profile-plugins.ts` / `plugin-package.ts`：解析 `$DSH_HOME/profiles/dsh-forge` 用户补丁层 → 体检外部包 → 把插入行裸名改写为入口绝对路径，装坏的包只跳过不连坐；ADR-004「bundle 即分发面」的落地，见 `docs/extension-guide.md` §2.5）、**Electron 子进程运行时适配器**（`subprocess-run-as-node.ts`：入口首条 import，对 `child_process.spawn` 收窄注入 `ELECTRON_RUN_AS_NODE`——上游以 `process.execPath` 拉起 runner，在 Electron 下会误用 GUI 二进制 `electron.exe` 致工具卡死，见坑 61）、**Windows 控制台适配器**（`win32-console.ts` + `win32-console-preload.ts`：给主进程与子进程 runner 备好隐藏控制台——上游 Windows 进程原语按「子进程共享宿主控制台」设计，GUI 宿主缺控制台会让工具调用闪出 cmd 窗口 / 受限令牌下报 `0xC0000142`；runner 经 `-r` 预载挂载，见坑 63）。
 - `src/forge-compat/`：旧插件兼容（`ctx.webServer` 等价面 `compat-webserver.ts`、preload fetch 拦截白名单、零端口 bundle 服务）。
 - `src/forge-plugins/`：桌面能力 host 插件（forge-tray / forge-hotkey / forge-notify / forge-settings / forge-restart 等），**插件包形态**（`cordis.patch.yml` + `dsh.client` 声明）——M2 暂不在此放文件，留待能力插件包化阶段启用。
 - `src/preload/`：`contextBridge` 白名单 API（`desktopBridge`：rpc/respond/onFrame/http/runtime 等）。
@@ -23,6 +23,7 @@ alwaysApply: true
   下行：`Host 事件` → `forge-host 帧路由` → `webContents.send('dsh:frame')` → `preload onFrame` → `renderer 载波变体`。
 - **解耦隔离**：renderer 禁止直接触碰 Electron/Node API（唯一出口 = `desktopBridge`）；主进程禁止反向依赖 renderer 业务组件；`forge-plugins` 只能经 `ctx.desktop.*` 注册能力，不得 import 其他插件内部实现。
 - **数据语义**：所有上下行帧逐字复用官方四象限协议（rpcId 纪律、zod、`approval/requested` 稳定 id），转换层只允许「封装」不允许「改写语义」。
+- **运行时约束（Electron 宿主）**：上游假设运行时是 Node；凡「以 `process.execPath` 拉起 Node 入口」的能力（子进程 runner、沙箱 runner、目录选择器 worker），在 Electron 下都必须经 `subprocess-run-as-node.ts` 注入 `ELECTRON_RUN_AS_NODE`（坑 61）。**主进程入口必须保持 CJS**——改为 ESM 会使该补丁失效（ESM facade 在链接期抢先创建）。同一条约束还有**控制台前提**：上游 Windows 进程原语按「子进程共享宿主控制台」设计，GUI 宿主（Electron）没有控制台会让控制台类工具闪出 cmd 窗口、受限令牌下报 `0xC0000142`，故主进程与 runner 都必须经 `win32-console.ts` 备好（隐藏）控制台（坑 63）。
 
 ## 03. 新建文件定位判定表 (Placement Decision Matrix)
 | 当你需要创建以下类型的文件时... | 请强制放置到以下目录： |

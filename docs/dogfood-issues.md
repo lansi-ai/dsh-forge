@@ -317,3 +317,20 @@
 - 安全口径（登记 `docs/08-security.md` §4）：动态包 ≈ bash 访问，vm 非安全边界；带浏览器半的包需页面审批（人在环），定义只存内存、不落盘
 - 状态：**fixed + 实机验证通过（2026-09-10 · 坑 55 · 用户确认）**：切换创造模式不再报 `did not activate`，双半与面板入口均可用
 
+### #24 · 选择/添加工作区弹「无法打开文件夹」：`workspaceNavigation.openWorkspace is not a function`
+
+- 环境：dev（`npm run dev -- --data-dir=E:\Projects\DSHPath\forge-home`，基线 0.1.5-rc.2）；报告 2026-09-14
+- 第一现场：渲染层错误层——标题「无法打开文件夹」、正文 `workspaceNavigation.openWorkspace is not a function`、按钮「取消 / 重新选择（重试必再报）」；触发动作 = 对话区 hero 工作区选择器「选已有工作区」或「添加工作区…」→ 选目录；**官方 web 端同一路径正常**
+- 根因（坑 62）：自研 `@lansi-ai/dsh-forge-workspaces` 顶替官方 ui-workspace（`CLIENT_EXCLUDE_IDS`）后，服务面按「官方六方法」抄，**漏了 0.1.5 的 `openSession` / `openWorkspace` / `forkSession`**；真调用方 = 官方 ui-conversation hero 槽位下发的 `selectWorkspace` → `workspaceNavigation.openWorkspace(...)`（`dsh-client-ui-conversation/lib/client.js:16648`）。同源第二处：`openWorkspace` 依赖的 `ctx.layout.beginNavigation()` / `selectPanel(null)` 在自研 `@lansi-ai/dsh-forge-layout` 的 `LayoutController` 里也缺——只补服务方法会立刻换成 `beginNavigation is not a function`
+- 变更：① `forge-workspaces-client.js` 补三方法 + `lifetime` + `startSession` 官方形态 + `inject` 补 `'layout'`；② `forge-layout-client.js` 的 `LayoutController` 补 `selectPanel` / `beginNavigation` / `dispose`；③ `eslint.config.mjs` 的 `BROWSER_GLOBALS` 补 `AbortSignal`
+- 状态：**fixed（2026-09-14 · 坑 62）**——typecheck / lint / 30 单测 / build 全绿；**待实机点验**（「选已有工作区」与「添加新文件夹」两条路径）
+
+### #25 · 工具调用时闪出系统 cmd 黑框（用户复报：仍存在）
+
+- 环境：dev（`npm run dev -- --data-dir=E:\Projects\DSHPath\forge-home`，基线 0.1.5-rc.2）；复报 2026-09-14
+- 第一现场：调用 `pwsh` / 终端类工具时桌面闪出一个 cmd 窗口（工具本身正常返回）；**官方 web 端同款工具不闪**（用户回忆官方早期也闪、后来不闪）
+- 根因（坑 63）：上游 Windows 进程原语按「**子进程共享宿主控制台**」设计——`dsh-win32-process` 创建目标不带任何控制台标志（ABI 表无 `CREATE_NO_WINDOW`/`CREATE_NEW_CONSOLE`），`dsh-sandbox-windows-acl` README 第 115 行明写该前提；官方 CLI/web 跑在终端（runner 为控制台子系统的 `node.exe`）天然满足，而 forge 的 main/runner 都是 GUI 子系统的 `electron.exe`（无控制台）→ 控制台类目标被 Windows **新建可见控制台**（实测 `count=1`/`visible=1`）；受限令牌下同一动作 = R23 的 `0xC0000142`
+- 变更：`src/forge-host/win32-console.ts`（`AttachConsole` 优先 → `AllocConsole`+隐藏兜底；幂等、绝不抛）+ `win32-console-preload.ts`（runner 预载入口）+ `subprocess-run-as-node.ts` 双注入点（`child_process.spawn` argv 与 `spec.argv`）+ `main.ts` 启动即挂并落日志 + `package.json` 显式声明 `koffi`
+- 状态：**verified（2026-09-14 · 用户实机确认）**——`workspace-write` 下 pwsh 恢复可用（原先恒 `0xC0000142`、需改用 `danger-full-access`，**R23 随之 closed**）；闪窗与 `0xC0000142` 为同一根因（创建者无控制台 → 受限令牌下自建控制台死在 DLL 初始化 / 普通令牌下自建出可见窗口），同一适配一并消除；typecheck / lint / 30 单测 / build 全绿
+
+

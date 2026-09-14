@@ -356,6 +356,9 @@
 31. **服务缺席要查「有没有 insert 行」，不是「有没有 disabled 行」**：非 insert 补丁只按 id 覆盖已存在条目，`{ id, disabled: true }` 写在一条从未插入的行上是**空操作**（坑 55）。诊断顺序 = 报错里的服务名 → `rg -uu` 找提供它的官方包（看 `static inject` / `provide`）→ 回本仓 roster 核对 **insert** 清单 + 客户端图谱排除表；agent 预设/list 类 `inject` 是硬契约，缺一个服务即整块挂不上（`N row(s) did not activate`），恢复时「宿主提供行 + 客户端半 + 宿主 UI 槽位」必须同批回填。
 32. **`git status` 显示 `M` 而 `git diff` 为空 = 索引 stat 缓存尺寸失配（行尾变化是常见诱因，不是判据）**：判别三查——`git hash-object <path>` 与 `git rev-parse HEAD:<path>` 相等（**内容零差异**，这是决定性证据）、`git ls-files --debug <path>` 的 `size` 与实际字节数不符、`git ls-files --eol`（仅辅助）；修复用 **`git add <path>`** 刷新 stat（内容相同即不产生暂存变更）。实测无效：`git update-index --refresh`、`Remove-Item` + `git checkout`（编辑器把行尾再归一化即复发）。此类假改动会卡住 `git merge --ff-only` 与 `scripts/release.cjs` 预检，且报错伪装成真实冲突（坑 56）。
 33. **「装了哪些插件」这类清单，先分清「数据面」与「界面面」再找源**：官方把二者拆成两个包（host 出清单 / client 渲染），窗口里能搜到条目只说明**界面面**在跑，清单内容由**数据面**决定。诊断顺序 = 页面上有没有显式错误态（有 → 链路断，查 unary/apiProxy；没有 → 链路通、返回内容不对，查数据面取数口径）；再确认数据面取数真源是「装配条目」还是「文件/目录派生」——只有前者能反映宿主侧插件（坑 57）。
+34. **自研件顶替官方包后，服务面的差分要「按当前安装版本」逐方法做**：`inject` 数组 + `super(ctx, 'x')` 那个类的方法名清单，与自研件对比；官方加方法不会报错、不会告警，**只等你点到那条路径**。报错文案常常指向别的领域（如「无法打开文件夹」），**认异常正文里的 `xxx is not a function` 属性名**才是真线索（坑 62）。
+35. **「宿主进程有没有控制台」是 Windows 工具链的隐性前提**：GUI 子系统宿主（Electron）不会继承控制台，而多数 Windows 进程原语按「共享宿主控制台」设计——宿主缺控制台时，控制台类子进程会被系统**新建窗口**（闪框），受限令牌下还会死在 DLL 初始化（`0xC0000142`）。排查顺序 = 先量**创建者**的 `GetConsoleWindow` / `GetConsoleProcessList`，再量目标的（子进程 `count===1` + `visible===1` 就是「新建了独立控制台」的指纹）；`windowsHide` 对 GUI 应用无效，别当捷径（坑 63）。
+36. **幂等脚本的「已存在」判定必须只看生效内容**：注释、示例、模板都是假阳性高发区（本例脚本拿 `includes('id: x')` 判定，被自己写出的模板注释骗到）。推论两条：① **装完要复核结果文件**，不能只信脚本打印的"完成"；② 优先用**官方校验脚本**交叉验证（如 `verify:profile-plugins`），而不是肉眼（坑 64）。
 
 ## 结论
 
@@ -841,3 +844,120 @@
   2. **`ctx.inject` 回调是「已激活之后」的代码，抛错会被隔离**：凡写在这里的初始化（注册命名空间、注册目录、订阅服务）都必须自带 `try/catch` + 明确日志，否则故障一律表现为「功能静默缺失」，而不是「启动失败」。
   3. **「一半功能在、一半不在」先怀疑注入回调**：本次「适配器路由有（`apply` 顶层成功）＋ 命名空间没有（inject 回调内失败）」这个组合，把范围一步压到 inject 回调内部，比盲查客户端快得多。
   4. **纯 Node 复现宿主装配是可行且高效的**：给最小 patch 集 + 真实 `boot()`，就能在沙箱内验证条目的激活与命名空间注册，不必反复启 Electron。**注意** `bareModuleBaseUrl` 必须传 **file URL**（`pathToFileURL(dir).href + '/'`），传文件路径会以 `Invalid URL` 报错并把你带偏——那是探针的坑，不是插件的。
+
+## 坑 61：Electron 宿主里**所有走 `ctx.subprocess` 的工具都会卡死** —— 上游 runner 用 `process.execPath` 拉起，而那是 GUI 子系统的 `electron.exe`
+
+- **现象**：在 DSH Forge 里让模型调用 `pwsh` / `grep` 工具 → 工具调用**卡住不返回，点停止也没反应**；**官方 web 端同一批插件完全正常**；**与路径无关**（`Downloads`、新建的 `E:\test`、`plugins` 目录都卡）；机器与文件系统健康（实测插件 `src` 遍历 1ms、系统 CPU 22%、无环路、无残留进程）。
+
+- **根因**（三层，第 3 层解释了「为什么恰好是这两个工具」）：
+  1. **上游用 `process.execPath` 拉起 Node 版 runner**：`dsh-subprocess-local/lib/index.js` 的 `launchWindowsJob` 执行
+     `(internals.spawn ?? spawn)(process.execPath, [runnerEntry, "--", ...targetArgv], { env: runnerEnvironment(...), stdio: runnerStdio(spec, true, ...) })`，
+     随后 `await child.on('message')` 取结果（Windows 下 runner 经 **IPC** 回报；Node 的 IPC 在 Windows 上正是**命名管道**，这解释了工具文档里那句「confined 模式下不能开命名管道」）。而 `spawnRunnerInvocation()` 返回的正是 `[process.execPath, <runner 入口>]`。
+  2. **Electron 里 `process.execPath` 是 `electron.exe`（GUI 子系统）**：官方 web 端 `process.execPath = node.exe` → 43ms 拿到 stdout + IPC（实测）；forge 里以 `electron.exe` 启动同一脚本 → **30ms 返回空 stdout，之后 5 秒内无 IPC、无 exit** → 父进程 `await` 永不结算 → **卡死，且停止键打断的是原生等待**。
+  3. **沙箱侧同一模式**：`dsh-sandbox-local/lib/index.js` 的 `confine()` 同样以 `process.execPath` 起 `windows-acl` runner；而 `dsh-tool-fs-search` 文档明写其 spawn 是「unconfined 的普通 `ctx.subprocess` 调用」。于是 **pwsh 与 grep 恰好是 forge 里仅有的两个走子进程的工具**，症状因此高度收敛。
+
+- **解法**（forge 侧适配器，2026-09-11）：新增 `src/forge-host/subprocess-run-as-node.ts`，置于入口**首条 import**，对 `child_process` 模块对象的 `spawn` 打补丁——**仅当 `command === process.execPath`** 时把 `ELECTRON_RUN_AS_NODE=1` 合并进子进程 env。影响面刻意收窄：Chromium 自身子进程不走 `child_process`、`app.relaunch()` 是 Electron API，均不受影响。Electron 内实测（`facadeCapturedPatch: true`）：子进程 `processType=null`（Node 模式）、`envRunAsNode=1`、**IPC 到达、退出码 0、零超时**。**失效自检**：补丁装好后立即比对 ESM facade 的 `spawn`，不一致就 `console.warn` 并写入 `problem`——反例（静态 `import node:child_process` 抢在适配器之前）实测已触发，告警原文为「ESM facade 早于补丁创建，子进程适配未生效（入口须保持 CJS，且本模块须为入口首条 import）」。**因此这个适配器不可能静默失效**。
+
+- **只补外层不够 —— 同一病根的第二个面（2026-09-11 由实机反馈补齐）**：实机判据极简单——**同一条 `echo ok`，`workspace-write` 下转圈、`danger-full-access` 下正常**。原因是受限模式会把目标命令**再包一层**：`confine()` 产出的 argv 是 `[electron.exe, windows-acl runner, …, --, pwsh, -Command, echo ok]`，而这层**目标**由 subprocess runner（`dsh-subprocess-local/lib/runner.js`，引 `@deepseek-ai/dsh-win32-process`）用 koffi `CreateProcess` 拉起 → `child_process` 补丁**盖不到它**，`electron.exe` 又以 GUI 模式启动 → 无输出 → 父进程一直等 → 转圈。而 `danger-full-access` 会「**绝不咨询提供方**」而完全绕过沙箱 runner，于是把「外层已修、内层未修」掩盖成「权限问题」。修法：`installSubprocessHook()` 在 **`ctx.subprocess` 的启动方法**（所有工具的**共享咽喉**）上给每次 spawn 的 `spec.env` 补一项——上游 `targetEnvironment(spec) = childEnv(spec.env)`，而 `childEnv = scrubbedParentEnv() + extra`，故 `spec.env` 一补即达目标进程；**只改 `spec.env`、不动 `process.env`**（后者会让 Chromium 子进程崩溃）。挂载点：`main.ts` boot 之后（与 `bindCordisInventoryHost` 同处，服务经 `hostCtx.get('subprocess')`），失败仅告警不阻断。
+
+- **实机验证（2026-09-11 · 用户确认）**：`grep` 恢复；`pwsh` 在 **`danger-full-access`** 下**全能力清单全通**——`echo` / 版本 / 列目录 / `cmd` 子进程 / **文件写入+读回** / 管道与循环 / **stdout-stderr 分离** / 错误 trace + 退出码。**仍存的边界见 `docs/11-risks.md` R23**：`workspace-write` 下沙箱包裹层子进程启动失败（`0xC0000142`，目标无关），已排除 8 项，仅剩 runner 的 job+inherited-stdio spawn 路径未验证；复现用 `& "<repo>\node_modules\electron\dist\electron.exe" "<repo>\node_modules\@deepseek-ai\dsh-sandbox-windows-acl\lib\runner.js" --workspace "E:\test" --temp "$env:TEMP" --mode read-only -- "C:\Windows\System32\cmd.exe" /c "echo hi"`（设 `ELECTRON_RUN_AS_NODE=1`，须在 IDE 外跑——IDE 内的沙箱会污染结果，本轮已出过一次假阳性）。
+
+- **同源现象：测试时「闪出系统 cmd 框」（2026-09-11 补）**：与 `0xC0000142` **同一根因**，且**上游已文档化**——`dsh-sandbox-windows-acl` README §已知限制原文：「控制台隔离不可用。以 `CREATE_NO_WINDOW` / `CREATE_NEW_CONSOLE` 创建的子进程在 DLL 初始化期间以 `STATUS_DLL_INIT_FAILED`（`0xC0000142`）死亡；**子进程共享宿主控制台**」。而 `dsh-subprocess-local` 的 spawn 带 `windowsHide: true`（=`CREATE_NO_WINDOW`）。**⇒ 官方 CLI/web 在终端里跑（父进程有控制台，子进程共享它 → 不闪框不失败）；forge 是 Electron GUI 进程（无控制台可共享 → 要么新建一个（闪框）要么受限令牌下死）**。**⇒ 属上游对 GUI 宿主的不兼容，不是 forge 缺陷，也不是「官方更新未捕捉」**（版本核对：本机 `dsh-app-boot`/`dsh-subprocess-local`/`dsh-sandbox-local`/`dsh-sandbox-windows-acl`/`dsh-pwsh-sandbox`/`dsh-tool-pwsh`/`dsh-base` **全为 `0.1.5-rc.2`** = npm `next`）。
+
+- **实测否决的两条错路（别再走）**：
+  1. **全局 `process.env.ELECTRON_RUN_AS_NODE='1'`** → Chromium 的 GPU / 网络服务子进程继承后崩溃：`GPU process exited unexpectedly: exit_code=9`。
+  2. **在 ESM facade 创建之后再打补丁** → 无效。facade 是创建时的**一次性快照**，实测「晚加载模块仍拿到原始 `spawn`」；且 `launchWindowsJob` 传入的是**显式构造的 env**，所以全局环境变量对这条 spawn 也无效。
+
+- **复盘要点**：
+  1. **Electron 宿主必须处理 `process.execPath` 语义差**：上游凡「用 `process.execPath` 拉起 Node 入口」的包（`dsh-subprocess-local`、`dsh-sandbox-local`、目录选择器 worker、`dsh-web-app` 的 `--serve` 分支）在 Electron 里都会把 GUI 二进制当 Node 用。判据 = `process.versions.electron !== undefined`。
+  2. **本项目主进程是 CJS（`"type": "commonjs"`）正是修法成立的前提**：CJS 的 `require` 不创建 ESM facade，所以补丁放在入口首条 import 就能被 boot 期**动态 `import()`** 的上游 ESM 包看到。**⚠️ 若将来把入口改成 ESM**，facade 会在链接期抢先创建，补丁将失效——届时应改为 CJS 引导壳（先 patch，再 `import()` 真正的 ESM 入口）。
+  3. **「官方 web 正常、forge 卡」= 先比运行时**：同一批上游包下最稳定的差异就是 Node vs Electron。这类差异优先查 `process.execPath`、`process.versions.electron`，以及 GUI 子系统的 stdout/IPC 行为。
+  4. **能归因的实验设计**：同一个 Electron 进程内分别用「补丁后的 `spawn`」与「facade 的原始 `spawn`」各起一次，桩进程回传 `process.type` 与 `process.env.ELECTRON_RUN_AS_NODE`——才能把「IPC 到达」归因到补丁本身，而不是环境巧合（本轮首测就出现过「facade 未捕获补丁却仍收到 IPC」的假阳性，靠这组对照才排除）。
+  5. **「完全访问正常 / 受限模式卡」= 先去看受限模式独有的那一层**：`danger-full-access` 会完全绕过沙箱 runner，因此它**天然掩盖**「外层已修、内层未修」的半修状态。判据不需要日志——同一条最简命令（如 `echo ok`）两种模式各跑一次即分。
+  6. **补丁要补在「共享咽喉」，不是「第一个现场」**：起先只补 `child_process.spawn`（覆盖外层 runner），但沙箱包裹后的**目标命令**其实由**另一个进程**用 koffi 拉起。凡「某能力的启动被多处包装」时，应找**所有调用都必然经过的那一个点**（本例是 `ctx.subprocess` 的启动方法），否则会得到「修了一半」的假阳性。
+  7. **包装对象方法必须保留接收者**（同一处引入、当场被实机抓住）：`Object.assign(service, { method: (...args) => original(...args) })` 会丢掉 `this` —— 上游 `spawn()` 内部大量 `this.selectContainmentMode(...)` 这类私有调用，于是启动即抛 `Cannot read properties of undefined (reading 'selectContainmentMode')`。必须写成 `original.apply(service, args)`。**教训的另一半在测试**：首版探针用的假服务方法**不读 `this`**，所以测不出这个 bug——探针必须复现真实调用形态（刻意读 `this`，断言 `receiverPreserved`），否则只是自我安慰。
+  8. **验证要看「能力清单」而不是「单条命令」**：最终实机验证用了完整清单（`echo`/版本/列目录/`cmd` 子进程/**文件写入+读回**/管道与循环/**stdout-stderr 分离**/错误 trace + 退出码）。单条 `echo` 通过曾掩盖过「第二层没生效」；清单式验证才能证明整条链贯通。
+  9. **「IDE 内复现」会骗人**：本轮我在 TRAE 沙箱内跑同一份 `AclSandbox` 复现脚本，得到 `0x80000005` 并据此误判「上游 rung 本机不可用」；你在 IDE 外跑同一脚本**成功**，直接推翻。**凡涉及进程/令牌/ACL 的复现，一律在 IDE 外做**。
+
+---
+
+## 坑 62：自研件顶替官方包后**服务面漏方法**，只会在「用户恰好点到那条路径」时爆 —— `workspaceNavigation.openWorkspace is not a function`
+
+- **现象**：forge 里「选择/添加工作区」（对话区 hero 的工作区选择器、或侧栏「添加工作区…」）弹出错误层——标题「无法打开文件夹」、正文 `workspaceNavigation.openWorkspace is not a function`、按钮「取消 / 重新选择」（点重试必然再报）；**官方 web 端同一路径完全正常**。
+
+- **根因**（两层，都是「接管面按当时的官方快照抄，官方后续版本加方法后没人再对齐」）：
+  1. **服务面缺方法**：`@lansi-ai/dsh-forge-workspaces` 顶替官方 `@deepseek-ai/dsh-client-ui-workspace`（在 `boot-graph.ts` 的 `CLIENT_EXCLUDE_IDS` 内），必须自己 `super(ctx, 'uiWorkspace')` 补位同名服务（坑 15/48 同源）。本件当时按「官方六方法」实现（`connectWorkspace` / `startSession` / `archiveSession` / `pickDirectory` / `listDirectory` / `createDirectory`），而 0.1.5 官方 `UiWorkspaceService` 还有 **`openSession(sessionId)` / `openWorkspace(workspaceId, beforeOpen)` / `forkSession(sessionId)`** 三个（`node_modules/@deepseek-ai/dsh-client-ui-workspace/lib/client.js:61/65/73`）。
+  2. **触发链 + 文案误导**：官方 ui-conversation 的 hero 槽位下发 `selectWorkspace: (workspaceId) => workspaceNavigation.openWorkspace(workspaceId, cb)`（`dsh-client-ui-conversation/lib/client.js:16648`）；本件 hero picker 的 `adoptDirectory` 把这个调用写在 `.then((workspace) => { setFlowOpen(false); onPick(workspace.workspaceId) })` 里，而 `.catch` 兜的是「Host 建工作区失败」→ `onPick` 抛的 TypeError **被同一个 catch 吞成业务失败**，渲染成 folderError 弹层。**⇒ 文案像目录问题，实际与目录、权限、路径全都无关。**
+  3. **同源第二处漏项（只补第一个方法会立刻换一个报错）**：`openWorkspace`/`openSession` 内部要 `this.ctx.layout.beginNavigation()` 与 `selectPanel(null)`，而自研 `@lansi-ai/dsh-forge-layout` 的 `LayoutController` 当时只有 `toggleSidebar` / `openRightbar` / `closeRightbar` —— 补上 `openWorkspace` 后会马上变成 `beginNavigation is not a function`。
+
+- **解法**（逐方法对齐官方，2026-09-14）：
+  1. `src/forge-shell/web/forge-workspaces-client.js`：补 `openSession(id)`（`sessions.open` + `ctx.layout.selectPanel(null)`）、`openWorkspace(id, beforeOpen)`（`AbortSignal.any([ctx.layout.beginNavigation(), this.lifetime.signal])` → `connectWorkspace` → **未中止才**交回 owner 并 `openSession`）、`forkSession(id)`（`beginNavigation` + `sessions.fork({ sessionId, increaseTitle: true })` → `openSession`）；新增 `lifetime = new AbortController()` 并在 `watchNavigation` 清理时 abort；`startSession` 改为官方形态（无目标时 `selectPanel(null)`，有目标时走 `openWorkspace`）；侧栏 `open` / `forkSession` 两个注入回调改走服务，不再自行 `sessions.open` / `sessions.fork`。
+  2. 同件 `exports.inject` 补 **`'layout'`**（官方 ui-workspace 同样声明）；不声明则 `this.ctx.layout` 访问会落 `cannot get property "layout" without inject`（`node_modules/@deepseek-ai/cordis/src/reflect.ts:144`）。
+  3. `src/forge-shell/web/forge-layout-client.js`：`LayoutController` 补 `selectPanel(panelId)`（桌面只认 `null` / `'conversation'`，其余按官方语义抛 `layout.selectPanel: main panel "x" is not registered`）+ `beginNavigation()`（新导航 / 有效选择 / 卸载即 abort）+ `dispose()`（apply 清理时调用）。
+  4. `eslint.config.mjs`：`BROWSER_GLOBALS` 补 `AbortSignal`（渲染器全局表原本只有 `AbortController`）——否则 `AbortSignal.any` 被 `no-undef` 先拦。
+
+- **质量门禁**：`node --check` 两件浏览器 bundle + `npm run typecheck` + `npm run lint` + `npm test`（30/30）+ `npm run build` 全绿；另加 **vm 探针**（vm 沙箱真实装载两件 bundle + 桩 ctx，端到端而非静态 grep）——5 组全通：① `ctx.layout` 六方法齐 + 三条中止语义（新导航中止上一个 / 有效选择中止 / 卸载作废 / 未注册 key 抛错且不中止）；② `uiWorkspace` 九方法齐 + `lifetime` 存在；③ `openWorkspace` 正常路径 = `create → open → selectPanel(null)`；④ 中止语义 = 已 abort 时**仍创建会话但不切面板**；⑤ `forkSession` → `openSession(childId)` + 卸载 abort `lifetime`。**实机仍待用户点验**（「选已有工作区」与「添加新文件夹」两条路径）。
+
+- **复盘要点**：
+  1. **顶替官方包 = 顶替它全部对外服务面，且必须「按当前版本逐方法核对」**：抄的时候对齐了，官方后续版本加方法就会**静默缺**（不报错、不告警，只等到用户点中那条路径）。核对手法：打开 `node_modules/<pkg>/lib/client.js`，找 `super(ctx, 'x')` 的那个类，把方法名逐个列出与自研件对比；**更快的差分判据 = 官方同包的 `inject` 数组**（本例差异恰好多出 `'layout'` 一项）。
+  2. **错误文案会误导归因**：`openWorkspace is not a function` 被渲染成「无法打开文件夹 / 重新选择」，看起来像目录或权限问题。**先读弹层正文里的原始异常文本**，再顺着 `属性名` 回查服务面，别被标题带走。
+  3. **`.then(...).catch(...)` 会把「回调里的编程错误」吞成业务失败**：本处 `.catch` 本意兜 Host 建工作区失败，却连 `onPick` 的 TypeError 一起吞了。凡 catch 兜业务失败的地方，要么把「回调调用」移出 try 范围，要么按错误类型分流——否则「服务缺方法」会伪装成「目录打不开」。
+  4. **补一个方法前先读它的依赖链**：`openWorkspace` → `ctx.layout.beginNavigation`；只补服务方法会在下一个调用点继续炸。**判据 = 把官方同名实现整段读完**（本次正是逐行对齐官方 `UiWorkspaceService` 才拿到 `lifetime` / `selectPanel` / `beginNavigation` 三处依赖）。
+  5. **`AbortSignal.any([...])` 在渲染器侧先过 eslint 全局表**：`AbortController` 在、`AbortSignal` 不在，`no-undef` 会先拦下一轮——**门禁顺序上，先补全局表再写代码**可省一次往返。
+
+---
+
+## 坑 63：工具调用时**闪出系统 cmd 黑框** —— 上游按「子进程共享宿主控制台」设计，而 Electron 是没有控制台的 GUI 进程
+
+- **现象**：调 `pwsh` / 终端类工具时，桌面闪出一个系统 cmd 黑框（工具本身正常返回）；**官方 CLI/web 端同款工具不闪**（用户回忆：官方早期版本也闪、后来不闪了，怀疑我们漏了官方更新）。
+
+- **根因**（三层，越往下越接近真因）：
+  1. **上游是「共享宿主控制台」的设计**：`@deepseek-ai/dsh-win32-process` 创建目标只用 `CreateProcessW` / `CreateProcessAsUserW` + `CREATE_UNICODE_ENVIRONMENT`（其 `README.zh.md` §Behavior 原文），该包 `lib/types/abi.d.ts` 常量表里**根本没有 `CREATE_NO_WINDOW` / `CREATE_NEW_CONSOLE`**；下游 `dsh-sandbox-windows-acl` README「已知限制」第 115 行把前提写死：「**子进程共享宿主控制台**」（并注明以 CREATE_NO_WINDOW / CREATE_NEW_CONSOLE 创建的子进程会以 `STATUS_DLL_INIT_FAILED` 死亡）。
+  2. **官方 CLI/web 天然满足该前提**：跑在终端里 → subprocess runner 是 `node.exe`（**控制台子系统**）→ 继承终端控制台 → 目标共用 → 不闪。**实测**：终端启动的父进程 `consoleProcessCount=4`，其子进程 `=5`（同一控制台，无新窗口）。
+  3. **forge 打破了前提**：主进程与 runner 都是 `electron.exe`（**GUI 子系统，永不继承控制台**）→ 目标（pwsh/cmd 是控制台子系统）由「无控制台的创建者」拉起时，**Windows 会为它新建一个可见控制台窗口**。**实测**：无控制台创建者 `hwnd=0, count=0` → 其子进程 `hwnd=462412, count=1, windowVisible=1`（就是那个闪框）。同一个「新建控制台」动作在**受限令牌**下死在 DLL 初始化，就是 **R23 的 `0xC0000142`** —— 两个现象同一根因，也解释了为什么它们总是成对出现。
+
+- **解法（forge 侧补齐上游假设，2026-09-14）**：让**创建者自己持有控制台**（attach 优先、alloc 兜底并隐藏）：
+  1. 新增 `src/forge-host/win32-console.ts`：koffi 绑 kernel32/user32（**懒加载**，不进入口关键路径、原生模块缺失也不拖垮启动），`ensureHostConsole(owner)` = `AttachConsole(ATTACH_PARENT_PROCESS)` → 失败则 `AllocConsole()` + `ShowWindow(SW_HIDE)`；**幂等**，**绝不抛**（预载抛异常会让 runner 起不来、所有工具全挂）；**attach 到别人的控制台时不隐藏**（那可能是用户自己的终端窗口）；ConPTY 托管（`GetConsoleWindow()=0`、hide 不到）时保留控制台并在 `detail` 里说明。
+  2. 新增 `src/forge-host/win32-console-preload.ts`：runner 的预载入口（Node 的 `-r` 只认 CJS，本项目 `"type": "commonjs"` 满足）。
+  3. `subprocess-run-as-node.ts` **两处注入**：① 外层 `child_process.spawn(process.execPath, …)` 的 argv 前插 `-r <preload>`（**实测 `-r` 被 Node 选项解析消费、不进 `process.argv`**，不扰动 runner 的 `--` 分段与目标 argv）；② `ctx.subprocess` 启动面若 `spec.argv[0] === process.execPath`（= **沙箱 ACL runner**，它才是受限子进程的真正创建者，且由 koffi 创建因此 child_process 补丁盖不到）则 `splice` 同一预载。
+  4. `main.ts` 启动早期调用 `ensureHostConsole('main')`，并把结果落日志（`attach` / `alloc` / `failed` + Win32 错误码）。
+  5. `package.json` 显式声明 `koffi`（原为上游传递依赖，本适配直接消费）。
+
+- **已实测否决的两条捷径**：① **给 runner 加 `windowsHide`**：`CREATE_NO_WINDOW` 对**非控制台应用被忽略**（MSDN 原文 + 本机实测：`electron.exe` 在 `windowsHide` 真/假下均 `consoleProcessCount=0`）；② **让 runner 改由 cmd/conhost 之类控制台宿主拉起**：GUI 子进程不继承宿主控制台，创建者仍是 GUI → 依旧新建窗口。
+
+- ✅ **已闭环（2026-09-14 · 用户实机确认）**：适配落地后 **`workspace-write` 下 pwsh 恢复可用**（原先恒 `0xC0000142`）——**R23 一并收口**，短期口径（改动前需改用 `danger-full-access`）解除。**一个机制同时解释四个现象**：① 受限令牌 + 需要**自建**控制台 → 自建在 DLL 初始化即死（`0xC0000142`，pwsh 根本没起来，所以无输出无报错文本）；② 普通令牌 + 需要自建 → 自建成功，但那是个**可见**窗口（= 闪框）；③ 宿主本来就有控制台（官方 CLI/web）→ 共享，既不闪也不死；④ 三层各自自备控制台（现在的 forge）→ 受限子进程改走**共享**，两个现象一起消失。⇒ 上一轮「单变量排除 8 项」全都排不出东西，是因为变量从来不在沙箱策略里，而在**宿主进程没有控制台**。取证/复验脚本 `.tmp/verify-console-window.cjs` 保留（IDE 外可复跑）；IDE 内 `AttachConsole`/`AllocConsole` 恒返回 6，故本结论来自用户实机复现而非内验。
+
+- **复盘要点**：
+  1. **判「会不会新建控制台」要看子系统，不看 flags**：GUI 子系统（electron.exe）永不继承控制台；控制台子系统（pwsh/cmd/node）在**创建者无控制台**时必然被新建一个。凡「宿主走 Windows 原生进程原语拉控制台类程序」的场景（沙箱、终端工具、任务执行器）先问一句：**创建者有没有控制台**。指纹 = 子进程 `consoleProcessCount===1` 且 `windowVisible===1`。
+  2. **官方能跑 ≠ forge 能跑，差异常写在文档的「已知限制」里**：上游那句「子进程共享宿主控制台」不是免责声明而是**设计前提**——宿主换成了没有控制台的环境，该由宿主侧把前提补齐，而不是等上游改（也别急着自研工具层，见上一轮结论）。
+  3. **`windowsHide` / `CREATE_NO_WINDOW` 不是万能隐身衣**：对非控制台应用（GUI 子系统）被忽略，用它「顺手修一下闪窗」只会拿到假阴性。
+  4. **注入点的选择标准是「谁是创建者」**：本例创建者是**两级**——subprocess runner 用 koffi 创建 ACL runner，ACL runner 再用受限令牌创建 pwsh；所以同一个预载必须同时挂在 `child_process.spawn` 的 argv 与 `spec.argv` 两条路径上，只补一条就是「修了一半」（坑 61 同款教训）。
+  5. **预载脚本的第一原则是不抛**：`-r` 的异常会让 runner 直接退出、工具全挂；适配器内部全程 try/catch，失败只告警并**把 Win32 错误码写进日志**——本次正是靠那两个错误码（5=已有控制台 / 6=环境阻拦）把「代码问题」与「环境问题」当场分开，省掉一轮猜测。
+
+---
+
+## 坑 64：外部插件安装脚本的「已装」判定被自己的模板注释骗到 —— 链接建了、插入行没写，插件静默不加载
+
+- **现象**：`node scripts/install-forge.cjs --forge … --home …` 打印「安装完成（重启 dsh-forge 生效）」，但重启后插件**根本没生效**；复核补丁层 `$DSH_HOME/profiles/dsh-forge/cordis.patch.yml`，里面仍是空的 `[]`（而在它之前，`profiles/node_modules/<包名>` 的 junction **已经建好了**——所以"看起来装过"）。
+
+- **根因**：脚本用 `existing.includes(\`id: ${PLUGIN_ID}\`)` 判断"补丁层是否已含本插件的插入行"，而**它自己写出的模板注释里就带一条示例**：
+  ```yaml
+  # - insert:
+  #     - id: llm-app-credentials
+  ```
+  → 字符串包含判断命中注释里的示例 → 假阳性 → 直接 `return`，**跳过写行那一步**。（同一个模式在"首次安装写模板"的分支里被再次写出，于是每次重跑都稳定复现。）
+
+- **解法**（2026-09-14）：判定只看**生效行**（过滤掉 `#` 开头的行）：
+  ```js
+  const activeLines = existing.split('\n').filter((line) => !line.trimStart().startsWith('#'))
+  if (activeLines.some((line) => line.includes(`id: ${PLUGIN_ID}`))) { /* 真已装 */ }
+  ```
+  已修改 `plugins/dsh-llm-app-credentials/scripts/install-forge.cjs`（该目录**不是 git 仓库**，故坑档在此留痕）；重跑后插入行正确落在注释之外，且 `npm run verify:profile-plugins` **7 项全 PASS**（含「插入行裸名改写生效」「模块可 import（peer 解析成立）」「图谱 id 与 client bundle 一致」）。
+
+- **复盘要点**：
+  1. **幂等脚本的"已存在"判定必须只看生效内容**：注释 / 示例 / 模板是假阳性的高发区；只要脚本自己会写出"含目标字符串"的模板，`includes` 就必然误判。
+  2. **装完要复核结果文件**，不能只信脚本打印的"完成"——本次正是靠 `Get-Content` 复核补丁层才发现（脚本输出与真实状态相反）。
+  3. **用官方校验脚本交叉验证**：`verify:profile-plugins` 直接检查"裸名改写是否生效 + 模块能否 import"，比肉眼靠谱；装完就跑它。
+  4. 安装类脚本的"三步"里，**建链接成功 ≠ 安装成功**：装载点是补丁层的 insert 行，链接只是前置条件——排查「装了不生效」时先看**补丁层有没有生效行**，再看链接。
+
+

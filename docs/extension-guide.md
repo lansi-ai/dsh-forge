@@ -211,6 +211,7 @@ preload 侧在 `src/forge-shell/preload.ts` 白名单加一个 `videoStudio` 命
 | 7 | 供应商 API Key 走环境变量，禁硬编码 | core-standards R-红线 |
 | 8 | 大文件产物走 spill-local，勿塞会话上下文 | boot.ts spill 配置 |
 | 9 | 外部插件的 peer 未链到宿主 → 插件被静默跳过（不崩，也不生效） | §2.5：先跑插件的 `scripts/link-peers.cjs`；启动日志有 `[dsh-profile]` 告警说明原因 |
+| 10 | 安装脚本打印「完成/已含插入行」但补丁层仍是 `[]`（判定被自己的模板注释骗到） | 坑 64：判定只看生效行；**装完必须复核** `$DSH_HOME/profiles/dsh-forge/cordis.patch.yml` 的 insert 行，并跑 `npm run verify:profile-plugins` |
 
 ---
 
