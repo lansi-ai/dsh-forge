@@ -27,10 +27,16 @@
  * 不持有控制台时它创建的控制台类目标（pwsh / cmd）会被 Windows 新建一个可见窗口（闪框）
  * 甚至死在 DLL 初始化（0xC0000142）。见 `./win32-console.ts`。
  *
+ * 附二：同一对注入点还承担**打包态 asar 路径改写**——上游解析出的可执行文件（如 ripgrep 的
+ * `rg.exe`）在打包后指向 `app.asar` 内，Windows 无法启动归档内的文件（打包态 Glob/Grep 全挂的真因），
+ * 故把这类 argv 就地映射到 `app.asar.unpacked` 孪生。见 {@link toUnpackedAsarPath}。
+ *
  * @module forge-host/subprocess-run-as-node
  */
 import nodeChildProcess from 'node:child_process'
 import type { ChildProcess, SpawnOptions } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import path from 'node:path'
 import { consolePreloadPath } from './win32-console.js'
 
 const RUN_AS_NODE_ENV = 'ELECTRON_RUN_AS_NODE'
@@ -120,7 +126,8 @@ if (subprocessRunAsNode.patched) void verifyFacade()
 
 /**
  * 纯函数：把运行期环境变量补进一次 spawn 请求的 `spec.env`，并给「目标自身即 Node 模式 runner」
- * 的 argv 补上控制台预载（见 `withRunAsNodeSpecArgv`）。
+ * 的 argv 补上控制台预载（见 `withRunAsNodeSpecArgv`）、把 asar 内的目标路径改写为 unpacked 孪生
+ * （见 `withUnpackedAsarSpecArgv`）。
  *
  * 上游 `targetEnvironment(spec)` = `childEnv(spec.env)`，而 `childEnv` = 「父进程环境 + extra」，
  * 因此给 `spec.env` 补一项，就能让**目标命令**（例如 `workspace-write` 下被沙箱包成
@@ -128,11 +135,12 @@ if (subprocessRunAsNode.patched) void verifyFacade()
  * 只改 `spec.env`、不动 `process.env`：全局设置会波及 Chromium 子进程（已实测崩溃）。
  *
  * @param spec - 形如 `{ argv, cwd, env? }` 的一次性 spawn 请求。
- * @returns 补好环境变量与预载的同一对象（原地修改，保持上游引用语义）。
+ * @returns 补好环境变量、预载与路径改写的同一对象（原地修改，保持上游引用语义）。
  */
 export function withRunAsNodeSpecEnv<T extends { argv?: unknown[]; env?: NodeJS.ProcessEnv }>(spec: T): T {
   spec.env = { ...(spec.env ?? {}), [RUN_AS_NODE_ENV]: '1' }
   withRunAsNodeSpecArgv(spec)
+  withUnpackedAsarSpecArgv(spec)
   return spec
 }
 
@@ -157,6 +165,58 @@ function withRunAsNodeSpecArgv(spec: { argv?: unknown[] }): void {
   const preload = consolePreloadPath()
   if (argv.includes(preload)) return
   argv.splice(1, 0, '-r', preload)
+}
+
+/** asar 归档内的路径特征段（`…\app.asar\…`）。 */
+const ASAR_SEGMENT = `${path.sep}app.asar${path.sep}`
+/** asar 已解出目录的路径特征段（`…\app.asar.unpacked\…`）。 */
+const UNPACKED_ASAR_SEGMENT = `${path.sep}app.asar.unpacked${path.sep}`
+
+/**
+ * 纯函数：把指向 asar 归档内的路径映射为其 `app.asar.unpacked` 孪生（仅当孪生真实存在时）。
+ *
+ * 背景（打包态 Glob/Grep 全挂的真因）：`@vscode/ripgrep` 的 `rgPath` 来自 `require.resolve`，
+ * 打包后恒为 `…\resources\app.asar\node_modules\@vscode\ripgrep-win32-x64\bin\rg.exe`。
+ * electron-builder 的 smartUnpack 确实把该 exe 解到了 `app.asar.unpacked`，但**解析出的字符串
+ * 不变**；Electron 的 asar 垫片只覆盖 fs（故 `existsSync` 为 true、解析「看似正常」），
+ * 而 Windows 的 `CreateProcess` 不认识归档——拿这个路径去启动必然 ENOENT。启动失败经 runner
+ * IPC 回到 `direct.reject`、再落到 `handle.done` 的拒绝，最终以
+ * 「subprocess failed before reporting an outcome (ripgrep provider failure)」暴露给模型，
+ * 与沙箱模式无关（`danger-full-access` 下同样失败，dev 模式因无 asar 层而正常）。
+ *
+ * 判定刻意收窄：① 只改**含 asar 特征段**的字符串；② 只在 `app.asar.unpacked` 下**真实存在**
+ * 同名文件时才替换。因此 runner 自身入口（`app.asar\…\runner.js`）与本模块注入的控制台预载
+ * （`app.asar\dist\forge-host\win32-console-preload.js`，二者均无 unpacked 孪生）保持原样，
+ * Electron 读 asar 的能力不受影响。
+ *
+ * @param value - argv 中的单个字符串元素。
+ * @param exists - 存在性判定（默认 `fs.existsSync`；注入以便单测覆盖三个分支）。
+ * @returns 孪生的真实路径，或原值。
+ */
+export function toUnpackedAsarPath(value: string, exists: (candidate: string) => boolean = existsSync): string {
+  if (value.includes(UNPACKED_ASAR_SEGMENT)) return value
+  const start = value.indexOf(ASAR_SEGMENT)
+  if (start < 0) return value
+  const candidate = `${value.slice(0, start)}${UNPACKED_ASAR_SEGMENT}${value.slice(start + ASAR_SEGMENT.length)}`
+  return exists(candidate) ? candidate : value
+}
+
+/**
+ * 原地把一次 spawn 请求的 argv 里所有指向 asar 内的路径改写为 unpacked 孪生。
+ *
+ * 遍历全部元素而非只看 `argv[0]`：调用面传进来的就是**原始目标命令**，而 pwsh / cmd 形态会把
+ * 真正要执行的程序写在 `-c` 之后的字符串里；按「特征段 + 孪生存在」双条件改写覆盖面更全且不误伤
+ * （见 {@link toUnpackedAsarPath}）。
+ *
+ * @param spec - 一次 spawn 请求（`argv` 原地改写，保持上游引用语义）。
+ */
+function withUnpackedAsarSpecArgv(spec: { argv?: unknown[] }): void {
+  const argv = spec.argv
+  if (!Array.isArray(argv)) return
+  for (let index = 0; index < argv.length; index += 1) {
+    const value = argv[index]
+    if (typeof value === 'string') argv[index] = toUnpackedAsarPath(value)
+  }
 }
 
 /**
