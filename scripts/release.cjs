@@ -4,23 +4,30 @@
 /**
  * DSH Forge 发版脚本（M4 发布链自动化）
  *
- * 流程：预检 → 质量门禁 → 版本号 bump →（可选）本地打包 → commit + tag →（可选）push 触发 CI
+ * 流程：预检 → 质量门禁 → 版本号 bump →（可选）本地打包 → commit + tag →（可选）推送
+ *       →（可选 --publish-local）建 Release + 上传产物 + 匿名复核描述符
  *
  * 用法：
- *   npm run release -- <version> [--local] [--clean] [--push] [--skip-gates] [--dry-run]
+ *   npm run release -- <version> [--local] [--clean] [--push] [--publish-local] [--skip-gates] [--dry-run]
  *
  * 选项：
  *   <version>      目标版本号（显式传，如 0.1.1-alpha.6）
  *   --local        额外执行本地 Windows 打包（npm run dist）+ 产物名对齐 latest.yml path + SHA256SUMS
  *   --clean        打包前清理 release/ 中非目标版本的旧产物（需配合 --local）
  *   --push         真实推送 main 与 v<version> tag（默认只做本地 commit/tag 并打印待推命令）
+ *   --publish-local  本地打包并**直接发布到 GitHub Release**（隐含 --local）。
+ *                    只推 main、**不推 tag** —— 推 tag 会触发 CI 双平台重建并用 --clobber
+ *                    覆盖本地产物；mac 包因此不在本次范围内（需要时用 workflow_dispatch 补，
+ *                    见文件末尾提示）。需要 GitHub CLI 且已 `gh auth login`。
  *   --skip-gates   跳过 typecheck/lint/test/build 门禁（仅调试用）
  *   --dry-run      只打印将执行的命令，不写文件/不提交/不打包
  *
  * 说明：
  *   1. tag 推送后由 .github/workflows/release-{win,mac}.yml 在云端构建双平台产物并上传 GitHub Release。
  *   2. 推送退出码不可信（沙箱拦 git 凭据库会伪失败，坑 44）→ 一律以 git ls-remote 回验为准。
- *   3. 本地打包需沙箱外运行（release/ 与 AppData 缓存在工作区外，见坑 0/38/42）。
+ *   3. 本地打包需沙箱外运行（release/ 与 AppData 缓存在工作区外，见坑 0/38/42）；`gh` 的凭据同样。
+ *   4. --publish-local 的上传清单与 release-win.yml 的 upload 步逐字一致：漏 latest.yml = 更新
+ *      404（坑 66），漏 .blockmap = 差量更新失效，本地名带空格 = 描述符 path 对不上（坑 41）。
  */
 
 const { spawnSync } = require('node:child_process');
@@ -31,8 +38,30 @@ const ROOT = path.resolve(__dirname, '..');
 const PACKAGE_JSON = path.join(ROOT, 'package.json');
 const PACKAGE_LOCK = path.join(ROOT, 'package-lock.json');
 const RELEASE_DIR = path.join(ROOT, 'release');
+const BUILDER_CONFIG = path.join(ROOT, 'electron-builder.yml');
 const BRANCH = 'main';
 const VERSION_RE = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;
+
+/** 发布目标仓库（`gh` 用；从 electron-builder.yml 的 publish 段读，避免两处漂移）。 */
+const REPO = (() => {
+  try {
+    const text = fs.readFileSync(BUILDER_CONFIG, 'utf8');
+    const owner = /^\s*owner:\s*(\S+)\s*$/m.exec(text)?.[1];
+    const repo = /^\s*repo:\s*(\S+)\s*$/m.exec(text)?.[1];
+    if (owner && repo) return `${owner}/${repo}`;
+  } catch {
+    /* 读不到就退回下面的常量 */
+  }
+  return 'lansi-ai/dsh-forge';
+})();
+
+/**
+ * 与 release-win.yml 的 upload 步**逐字一致**的上传清单。
+ *
+ * 刻意排除 `latest-mac.yml`：本地产不出 mac 包，若 release/ 里残留上一批 mac 描述符，
+ * 传上去会让 mac 客户端拿到指向不存在资产的描述符。
+ */
+const UPLOAD_PATTERNS = [/setup\.exe$/, /portable\.exe$/, /\.blockmap$/, /^latest\.yml$/, /^SHA256SUMS$/];
 
 const argv = process.argv.slice(2);
 const flags = new Set(argv.filter((arg) => arg.startsWith('--')));
@@ -41,9 +70,14 @@ const opts = {
   local: flags.has('--local'),
   clean: flags.has('--clean'),
   push: flags.has('--push'),
+  publishLocal: flags.has('--publish-local'),
   skipGates: flags.has('--skip-gates'),
   dryRun: flags.has('--dry-run'),
 };
+// --publish-local 隐含本地打包；推送交给 pushBranchOnly()（只推 main，不推 tag）。
+if (opts.publishLocal) {
+  opts.local = true;
+}
 
 function log(message) {
   console.log(`[release] ${message}`);
@@ -102,6 +136,22 @@ function runScript(fileName, extraArgs = []) {
   if (result.status !== 0) {
     die(`scripts/${fileName} 退出码 ${result.status}`);
   }
+}
+
+/** 执行 gh 子命令（--publish-local 用；文件清单显式传参，不依赖 shell glob）。 */
+function gh(args, { capture = false, allowFail = false } = {}) {
+  const result = spawnSync('gh', args, {
+    cwd: ROOT,
+    encoding: 'utf8',
+    stdio: capture ? 'pipe' : 'inherit',
+  });
+  if (result.error) {
+    die(`gh ${args.join(' ')} 执行失败：${result.error.message}（需要 GitHub CLI，且已 gh auth login）`);
+  }
+  if (!allowFail && result.status !== 0) {
+    die(`gh ${args.join(' ')} 退出码 ${result.status}`);
+  }
+  return { status: result.status ?? 1, stdout: (result.stdout || '').trim() };
 }
 
 /** 解析语义化版本号；非法返回 null。 */
@@ -179,11 +229,27 @@ function bumpVersionField(filePath, oldVersion, newVersion, expectedCount) {
   log(`${fileName}: ${oldVersion} → ${newVersion}`);
 }
 
-/** 预检：工作区、分支、tag 唯一性、远程同步。 */
+/** 预检：工作区、分支、tag 唯一性、远程同步、（本地发布时）gh 可用性。 */
 function preflight() {
+  if (opts.publishLocal && !opts.dryRun) {
+    const probe = gh(['--version'], { capture: true, allowFail: true });
+    if (probe.status !== 0) {
+      die('--publish-local 需要 GitHub CLI：请安装 gh 并确保它在 PATH 上');
+    }
+    if (gh(['auth', 'status'], { capture: true, allowFail: true }).status !== 0) {
+      die('--publish-local 需要已登录的 gh：请先执行 `gh auth login`');
+    }
+    log(`✓ gh 就绪（发布目标 ${REPO}）`);
+  }
+
   const dirty = git(['status', '--porcelain'], { capture: true });
   if (dirty) {
-    die(`工作区不干净，请先提交或暂存以下改动：\n${dirty}`);
+    // 干跑是"预览计划"：状态不满足只警告，不拦——否则想看一眼计划都得先提交
+    if (opts.dryRun) {
+      log(`(dry-run) 工作区不干净，真实发版会在此中止：\n${dirty}`);
+    } else {
+      die(`工作区不干净，请先提交或暂存以下改动：\n${dirty}`);
+    }
   }
 
   const branch = git(['rev-parse', '--abbrev-ref', 'HEAD'], { capture: true });
@@ -196,11 +262,16 @@ function preflight() {
   }
 
   log('同步远程…');
-  git(['fetch', 'origin', BRANCH]);
-  // 允许本地领先（未推的功能提交随发版一并推送），但落后/分叉必须先对齐
-  const behind = git(['rev-list', '--count', `HEAD..origin/${BRANCH}`], { capture: true });
-  if (Number(behind) > 0) {
-    die(`本地 ${BRANCH} 落后 origin/${BRANCH} ${behind} 个提交，请先 pull 对齐`);
+  if (opts.dryRun) {
+    // 干跑不碰 .git（git fetch 会写 FETCH_HEAD）也不依赖网络：只预览将要执行的命令
+    log('(dry-run) 跳过 git fetch 与落后检查');
+  } else {
+    git(['fetch', 'origin', BRANCH]);
+    // 允许本地领先（未推的功能提交随发版一并推送），但落后/分叉必须先对齐
+    const behind = git(['rev-list', '--count', `HEAD..origin/${BRANCH}`], { capture: true });
+    if (Number(behind) > 0) {
+      die(`本地 ${BRANCH} 落后 origin/${BRANCH} ${behind} 个提交，请先 pull 对齐`);
+    }
   }
 
   const remoteTag = git(['ls-remote', '--tags', 'origin', `refs/tags/v${version}`], { capture: true });
@@ -301,9 +372,147 @@ function push() {
   log('CI 已触发：release-win + release-mac 将构建并上传 GitHub Release');
 }
 
-function main() {
+/**
+ * 只推 `main`（`--publish-local` 专用）：不推 tag，避免触发 CI 双平台重建。
+ *
+ * tag 随后由 `gh release create --target` 在远端创建（指向同一个提交），因此
+ * `releases/download/<tag>/latest.yml` 这类更新 URL 仍然成立。
+ */
+function pushBranchOnly() {
+  const tag = `v${version}`;
+  if (opts.dryRun) {
+    log(`(dry-run) git push origin ${BRANCH}`);
+    log(`(dry-run) gh release create ${tag} --target ${BRANCH} …`);
+    return;
+  }
+  // 坑 44：push 退出码不可信（凭据库被拦也报非 0）→ 只以 ls-remote 回验判定
+  git(['push', 'origin', BRANCH], { allowFail: true });
+  const localHead = git(['rev-parse', 'HEAD'], { capture: true });
+  const remoteHead = git(['ls-remote', 'origin', `refs/heads/${BRANCH}`], { capture: true });
+  if (!remoteHead.startsWith(localHead)) {
+    die(`回验失败：origin/${BRANCH} 未指向 ${localHead.slice(0, 7)}`);
+  }
+  log(`✓ origin/${BRANCH} 已指向 ${localHead.slice(0, 7)}（tag 不推，交由 Release 创建）`);
+}
+
+/** 按与 CI 一致的清单列出 release/ 下待上传的产物（顺序稳定，便于日志核对）。 */
+function artifactsToUpload() {
+  if (!fs.existsSync(RELEASE_DIR)) {
+    die('release/ 不存在：请确认本地打包已完成');
+  }
+  const files = fs
+    .readdirSync(RELEASE_DIR)
+    .filter((name) => UPLOAD_PATTERNS.some((pattern) => pattern.test(name)))
+    .sort()
+    .map((name) => path.join('release', name));
+  if (!files.some((file) => file.endsWith('latest.yml'))) {
+    die('release/latest.yml 缺失——没有更新描述符就上传，等于发布了一个谁也更新不到的新版（坑 66）');
+  }
+  if (!files.some((file) => file.endsWith('SHA256SUMS'))) {
+    die('release/SHA256SUMS 缺失——M4-e 门禁要求校验和可外部验证');
+  }
+  return files;
+}
+
+/** 匿名 HEAD 复核一个发布 URL（发布完成后更新链是否真的可达）。 */
+async function headStatus(url) {
+  try {
+    // 走 globalThis：本脚本是纯 CJS（ESLint 的 script 环境未声明 fetch），Node ≥ 18 全局自带
+    const response = await globalThis.fetch(url, { method: 'HEAD', redirect: 'follow' });
+    return response.status;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * 匿名复核描述符可达（带重试：CDN 传播偶尔滞后几秒）。
+ *
+ * @param urls - 待复核的完整下载 URL。
+ * @returns 全部 200 时为 true。
+ */
+async function descriptorsReachable(urls) {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const results = [];
+    for (const url of urls) {
+      results.push([url, await headStatus(url)]);
+    }
+    if (results.every(([, status]) => status === 200)) {
+      for (const [url] of results) {
+        log(`✓ 匿名 HEAD 200 ${url}`);
+      }
+      return true;
+    }
+    for (const [url, status] of results) {
+      log(`… 第 ${attempt} 次复核未通过（HTTP ${status}）：${url}`);
+    }
+    if (attempt < 3) {
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+    }
+  }
+  return false;
+}
+
+/**
+ * 本地发布（`--publish-local`）：建 Release → 上传清单 → 核对资产 → 匿名复核。
+ *
+ * 与 `release-win.yml` 的差异只有一处：资产由本地构建产出（CI 那套仍可用作补传）。
+ * 建 Release 严格「先查后建」，避免与 mac CI 撞车（坑 66）。
+ */
+async function publishLocal() {
+  const tag = `v${version}`;
+  const prerelease = (parseVersion(version)?.pre.length ?? 0) > 0;
+  const files = artifactsToUpload();
+  log(`发布清单（${files.length} 个）：${files.join(' · ')}`);
+
+  if (opts.dryRun) {
+    log(`(dry-run) gh release view ${tag} --repo ${REPO}`);
+    log(`(dry-run) gh release create ${tag} --target ${BRANCH}${prerelease ? ' --prerelease' : ''} --repo ${REPO}`);
+    log(`(dry-run) gh release upload ${tag} <${files.length} 个产物> --clobber --repo ${REPO}`);
+    return;
+  }
+
+  const viewed = gh(['release', 'view', tag, '--repo', REPO], { capture: true, allowFail: true });
+  if (viewed.status !== 0) {
+    const notes =
+      `本地发布（${new Date().toISOString().slice(0, 10)}）：Windows 产物由维护者本机构建上传。` +
+      '更新说明待人工补充（gh release edit <tag> --notes-file <file>）。';
+    const createArgs = ['release', 'create', tag, '--target', BRANCH, '--title', tag, '--notes', notes, '--repo', REPO];
+    if (prerelease) {
+      createArgs.push('--prerelease');
+    }
+    gh(createArgs);
+    log(`✓ 已创建 Release ${tag}${prerelease ? '（预发布）' : ''}（tag 指向 ${BRANCH}）`);
+  } else {
+    log(`Release ${tag} 已存在，直接上传（幂等）`);
+  }
+
+  gh(['release', 'upload', tag, ...files, '--clobber', '--repo', REPO]);
+  log(`✓ 已上传 ${files.length} 个产物`);
+
+  const listed = gh(['release', 'view', tag, '--json', 'assets', '--repo', REPO], { capture: true });
+  const assets = new Set((JSON.parse(listed.stdout || '{"assets":[]}').assets || []).map((one) => one.name));
+  const missing = files.map((file) => path.basename(file)).filter((name) => !assets.has(name));
+  if (missing.length > 0) {
+    die(`Release 资产核对失败，缺：${missing.join(', ')}`);
+  }
+  log(`✓ Release 资产核对通过（${assets.size} 个在册）`);
+
+  const base = `https://github.com/${REPO}/releases/download/${tag}`;
+  const reachable = await descriptorsReachable([`${base}/latest.yml`, `${base}/SHA256SUMS`]);
+  if (!reachable) {
+    die(`匿名复核失败：${base}/latest.yml 或 SHA256SUMS 不可达——客户端更新会 404`);
+  }
+  log('✓ 本地发布完成（应用内检查更新可直接命中）');
+  log('提醒：本次未出 mac 包；需要 mac 产物时用 workflow_dispatch 跑 release-mac（不要推 tag，否则会触发 CI 重建并覆盖本地产物）');
+  log(`提醒：更新说明请人工写入 Release（gh release edit ${tag} --notes-file <file>）`);
+}
+
+async function main() {
   if (!version) {
-    die('用法：npm run release -- <version> [--local] [--clean] [--push] [--skip-gates] [--dry-run]');
+    die(
+      '用法：npm run release -- <version> [--local] [--clean] [--push] [--publish-local] [--skip-gates] [--dry-run]',
+    );
   }
   const target = parseVersion(version);
   if (!target) {
@@ -322,7 +531,12 @@ function main() {
     die(`目标版本 ${version} 必须高于当前版本 ${currentVersion}`);
   }
 
-  const plan = [opts.local ? '本地打包' : null, opts.push ? '推送触发 CI' : '仅本地'].filter(Boolean).join(' · ');
+  const plan = [
+    opts.local ? '本地打包' : null,
+    opts.publishLocal ? '本地发布到 GitHub Release' : opts.push ? '推送触发 CI' : '仅本地',
+  ]
+    .filter(Boolean)
+    .join(' · ');
   log(`发版计划：${currentVersion} → ${version}（${plan}）`);
 
   preflight();
@@ -333,11 +547,19 @@ function main() {
     packageLocal();
   }
   commitAndTag();
-  push();
+  if (opts.publishLocal) {
+    pushBranchOnly();
+    await publishLocal();
+  } else {
+    push();
+  }
   if (!opts.local) {
     log('提示：未指定 --local，本次未生成本地安装包（release/ 无本版产物）；需要本地包请下次加 --local');
   }
   log('✓ 发版流程完成');
 }
 
-main();
+void main().catch((error) => {
+  console.error(`[release] ✗ ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+});
