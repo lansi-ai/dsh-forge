@@ -294,14 +294,42 @@ function gates() {
   log('✓ 质量门禁通过（typecheck / lint / test / build）');
 }
 
+/** 产物名里「版本号之后的部件」——用于把 `DSH-Forge-<版本>-<部件>.<扩展名>` 的版本切出来。 */
+const ARTIFACT_KINDS = new Set(['setup', 'portable', 'arm64', 'x64', 'ia32', 'armv7l', 'universal']);
+
+/**
+ * 从产物名解析它对应的版本号。
+ *
+ * 为什么不能拿 `name.includes(version)` 判过期：目标 `0.1.1` 是 `0.1.1-rc.5` 的**子串**，
+ * 于是同核心的旧预发布产物会被判成"仍是目标版本"而永不清除，随后又被上传清单按扩展名
+ * 收进 Release（rc.5 实测：两个 130MB 旧安装包会被一起传上 v0.1.1）。
+ *
+ * @param {string} name - release/ 下的文件名。
+ * @returns 精确版本号；名字不符合本仓产物格式时返回 undefined（不猜、不动）。
+ */
+function versionOfArtifact(name) {
+  const matched = /^DSH-Forge-(.+?)\.(exe|dmg|zip)(?:\.blockmap)?$/u.exec(name);
+  if (matched === null) {
+    return undefined;
+  }
+  const stem = matched[1];
+  const cut = stem.lastIndexOf('-');
+  if (cut <= 0) {
+    return undefined;
+  }
+  const kind = stem.slice(cut + 1);
+  return ARTIFACT_KINDS.has(kind) ? stem.slice(0, cut) : undefined;
+}
+
 /** 清理 release/ 中非目标版本的旧产物（仅 --clean 显式开启）。 */
 function cleanStaleArtifacts() {
   if (!fs.existsSync(RELEASE_DIR)) {
     return;
   }
-  const stale = fs.readdirSync(RELEASE_DIR).filter(
-    (name) => /\.(exe|blockmap|dmg|zip)$/.test(name) && !name.includes(version),
-  );
+  const stale = fs.readdirSync(RELEASE_DIR).filter((name) => {
+    const artifactVersion = versionOfArtifact(name);
+    return artifactVersion !== undefined && artifactVersion !== version;
+  });
   if (stale.length === 0) {
     log('release/ 无旧版本产物需清理');
     return;
@@ -404,11 +432,21 @@ function artifactsToUpload() {
   if (!fs.existsSync(RELEASE_DIR)) {
     die('release/ 不存在：请确认本地打包已完成');
   }
-  const files = fs
+  const matched = fs
     .readdirSync(RELEASE_DIR)
     .filter((name) => UPLOAD_PATTERNS.some((pattern) => pattern.test(name)))
-    .sort()
-    .map((name) => path.join('release', name));
+    .sort();
+  // 第二道闸：即便没人加 --clean，也不能把别的版本号的产物传进本版 Release。
+  // 与 cleanStaleArtifacts 同一判定函数，避免两处口径分叉。
+  const files = [];
+  for (const name of matched) {
+    const artifactVersion = versionOfArtifact(name);
+    if (artifactVersion !== undefined && artifactVersion !== version) {
+      log(`⚠ 跳过非本版产物 release/${name}（属于 ${artifactVersion}）——建议带 --clean 重跑`);
+      continue;
+    }
+    files.push(path.join('release', name));
+  }
   if (!files.some((file) => file.endsWith('latest.yml'))) {
     die('release/latest.yml 缺失——没有更新描述符就上传，等于发布了一个谁也更新不到的新版（坑 66）');
   }
