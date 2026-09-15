@@ -6,7 +6,8 @@
  * 不需要 Node、pnpm，也不需要官方 `dsh` CLI（那三样恰恰是照抄官方命令装不上的原因）。
  *
  * 支持的 spec：
- *   - `github:<owner>/<repo>`       —— 经 GitHub API 取默认分支，再从 codeload 拉 tar.gz；
+ *   - `github:<owner>/<repo>`       —— 经 GitHub API 取默认分支（限流时回退探测 main/master），
+ *                                      再从 codeload 拉 tar.gz；
  *   - `github:<owner>/<repo>@<ref>` —— 直取指定分支 / 标签 / 提交；
  *   - 本地目录路径                   —— 旁加载（开发、离线分发）。
  *
@@ -28,6 +29,7 @@ import { gunzipSync } from 'node:zlib'
 import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { log } from './log.js'
+import { summarizeError } from './plugin-package.js'
 import { PROFILE_PATCH_TEMPLATE } from './profile-plugins.js'
 
 /** 一次安装的结果（供启动横幅与失败诊断）。 */
@@ -107,11 +109,42 @@ async function resolveSource(spec: string): Promise<Source> {
   if (ref !== undefined) {
     return { kind: 'github', label: trimmed, url: `https://codeload.github.com/${owner}/${repo}/tar.gz/${ref}` }
   }
-  const branch = await defaultBranchOf(owner, repo)
+  const branch = await resolveDefaultBranch(owner, repo)
   return {
     kind: 'github',
     label: trimmed,
     url: `https://codeload.github.com/${owner}/${repo}/tar.gz/refs/heads/${branch}`,
+  }
+}
+
+/**
+ * 取默认分支：先问 GitHub API，失败（限流 / 离线）再探测 `main` / `master`。
+ *
+ * 为什么要回退：匿名 API 限流是 **IP 级**的（60 次/小时，共享出口会被整片拖下水，
+ * 实测本机就被限流）。这条命令是"一条命令装插件"，不该因为别人的请求量而不可用；
+ * 而 codeload 取 tarball 不走这个限额。探测猜测错了也只是 404，会带着原文报错。
+ */
+async function resolveDefaultBranch(owner: string, repo: string): Promise<string> {
+  try {
+    return await defaultBranchOf(owner, repo)
+  } catch (error) {
+    log.warn(`[dsh-install] 查询默认分支失败，回退探测 main / master：${summarizeError(error)}`)
+    for (const candidate of ['main', 'master']) {
+      if (await reachable(`https://codeload.github.com/${owner}/${repo}/tar.gz/refs/heads/${candidate}`)) {
+        return candidate
+      }
+    }
+    throw error
+  }
+}
+
+/** 一个 URL 是否可达（HEAD，任意非 4xx/5xx 视为可达）。 */
+async function reachable(url: string): Promise<boolean> {
+  try {
+    const response = await fetch(url, { method: 'HEAD', headers: { 'user-agent': 'dsh-forge' } })
+    return response.ok
+  } catch {
+    return false
   }
 }
 
