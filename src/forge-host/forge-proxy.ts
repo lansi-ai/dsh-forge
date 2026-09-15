@@ -1,11 +1,21 @@
 /**
  * dsh-forge 网络代理设置（Chromium 网络栈 · 三态 direct / system / manual）。
  *
- * 覆盖范围（与用户确认的「方案 A」边界）：
- *   - `session.defaultSession` —— 渲染进程 / 协议层发出的真实 HTTP；
- *   - `electron-updater` 独立分区 —— 应用更新的探测与下载。
- * **不覆盖**走 Node 栈的请求（官方 Host 侧的模型 API 调用不在本设置范围内），
- * UI 需如实标注该边界，避免「设了代理但模型仍连不上」的误判。
+ * 覆盖范围 = 两条网络栈，一次设置同时生效：
+ *   - Chromium 栈：`session.defaultSession`（渲染进程 / 协议层真实 HTTP）
+ *     + `electron-updater` 独立分区（更新探测与下载）；
+ *   - Node 栈：undici 全局 dispatcher（`web_fetch` 抓取、`web_search`、模型 API、MCP）。
+ *     上游 `@deepseek-ai/dsh-http-proxy` 是 library 而非插件，策略「每进程只有一个答案」，
+ *     官方由 launcher 在插件挂载前安装；Electron 宿主没有 launcher 那一段 → 本模块补上
+ *     `installProxyFromEnvironment`（**不安装 = 恒直连**，这正是此前后 web_fetch 打不开
+ *     境外站点的原因：工具本身支持代理，但没人装策略）。
+ *
+ * 三态语义（两条栈的一致性口径）：
+ *   - `direct`：两侧都强制直连（Node 侧释放策略即可，不装 = 直连）；
+ *   - `system`：Chromium 交系统；Node 侧取 **Chromium 解析出的系统代理**
+ *     （`session.resolveProxy`，与渲染进程同源），解析为直连时回落进程环境变量 → 与
+ *     「系统代理就会走代理」的期望一致（详见 forge-node-proxy.ts 的已知边界）；
+ *   - `manual`：两侧指向同一地址（SOCKS 只有 Chromium 支持，Node 侧按上游限制直连）。
  *
  * 关键约束：electron-updater 的 HTTP 走**独立 session 分区**
  * （`NET_SESSION_NAME = 'electron-updater'`，见 electron-updater/out/electronHttpExecutor.js
@@ -16,12 +26,14 @@
  * 命名空间，字符串值域），装配时按持久化值 apply 一次。配置写入经 `desktop.writeConfig`
  * 自动落 `config.write` 审计。
  *
- * 由 main.ts bootstrap 装配。无监听器/定时器，session 随进程销毁，故无需 dispose。
+ * 由 main.ts bootstrap 装配。Chromium 侧无监听器/定时器，session 随进程销毁；
+ * Node 侧的策略释放器在「切换模式/重装」时显式调用（见 applyNodeProxy）。
  */
 
 import { session } from 'electron'
 import type { Session } from 'electron'
 import type { DesktopCore } from '../types/desktop.js'
+import { applyNodeProxy } from './forge-node-proxy.js'
 import { log } from './log.js'
 
 // ── 类型 ───────────────────────────────────────────────────────────
@@ -132,6 +144,23 @@ async function applyToSessions(config: ProxyConfig): Promise<string | null> {
   return firstError
 }
 
+// ── 手动输入 → Node 侧代理 URL ────────────────────────────────────────
+
+/**
+ * 取手动输入对应的 Node 侧代理 URL（Node 侧的安装与三态解析见 forge-node-proxy.ts）。
+ *
+ * @param rawRules 手动模式原始输入（`host:port` 或 `<scheme>://host:port`）。
+ * @returns `http://host:port`；SOCKS 与非法输入返回 null（上游只支持 http(s) 代理）。
+ */
+function manualProxyUrlOf(rawRules: string): string | null {
+  const value = rawRules.trim()
+  const matched = RULES_RE.exec(value)
+  if (matched === null) return null
+  const scheme = matched[1]
+  if (scheme === 'socks4' || scheme === 'socks5') return null
+  return `http://${value.replace(/^[a-z0-9]+:\/\//, '')}`
+}
+
 /**
  * 装配网络代理设置。
  *
@@ -163,6 +192,8 @@ export function installDesktopProxy(options: DesktopProxyOptions): DesktopProxyH
     proxyRules: string,
   ): Promise<{ ok: boolean; message?: string }> => {
     const error = await applyToSessions(toConfig(mode, proxyRules))
+    // Node 栈出口跟随同一次设置；Chromium 侧成功才动它，保证两条栈口径一致
+    if (error === null) await applyNodeProxy(mode, manualProxyUrlOf(rawRules))
     state.applied = error === null
     if (error === null) {
       delete state.error

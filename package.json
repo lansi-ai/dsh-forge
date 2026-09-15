@@ -65,6 +65,7 @@
     "@deepseek-ai/dsh-fs": "0.1.5-rc.2",
     "@deepseek-ai/dsh-hook-protocol": "0.1.5-rc.2",
     "@deepseek-ai/dsh-host-open-in-app": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-http-proxy": "0.1.5-rc.2",
     "@deepseek-ai/dsh-jobs": "0.1.5-rc.2",
     "@deepseek-ai/dsh-launch-environment": "0.1.5-rc.2",
     "@deepseek-ai/dsh-output-retention": "0.1.5-rc.2",
