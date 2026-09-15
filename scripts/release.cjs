@@ -16,9 +16,11 @@
  *   --clean        打包前清理 release/ 中非目标版本的旧产物（需配合 --local）
  *   --push         真实推送 main 与 v<version> tag（默认只做本地 commit/tag 并打印待推命令）
  *   --publish-local  本地打包并**直接发布到 GitHub Release**（隐含 --local）。
- *                    只推 main、**不推 tag** —— 推 tag 会触发 CI 双平台重建并用 --clobber
- *                    覆盖本地产物；mac 包因此不在本次范围内（需要时用 workflow_dispatch 补，
- *                    见文件末尾提示）。需要 GitHub CLI 且已 `gh auth login`。
+ *                    只推 main、**不显式推 tag**；tag 由 `gh release create --target` 在远端隐式创建
+ *                    （GitHub Release 必然绑定 tag）。**2026-09-15 起按坑 70 决策 B2，两个 release
+ *                    workflow 已移除 `on: push: tags`（仅 workflow_dispatch）**，故 tag 创建不再触发
+ *                    CI 重建 —— **本地产物即最终权威产物**；mac 产物需为每个版本手动
+ *                    `gh workflow run release-mac.yml`。需要 GitHub CLI 且已 `gh auth login`。
  *   --skip-gates   跳过 typecheck/lint/test/build 门禁（仅调试用）
  *   --dry-run      只打印将执行的命令，不写文件/不提交/不打包
  *
@@ -373,10 +375,12 @@ function push() {
 }
 
 /**
- * 只推 `main`（`--publish-local` 专用）：不推 tag，避免触发 CI 双平台重建。
+ * 只推 `main`（`--publish-local` 专用）：函数自身不推 tag。
  *
  * tag 随后由 `gh release create --target` 在远端创建（指向同一个提交），因此
- * `releases/download/<tag>/latest.yml` 这类更新 URL 仍然成立。
+ * `releases/download/<tag>/latest.yml` 这类更新 URL 成立。⚠️ 历史上因 release-{win,mac}
+ * 监听 `push: tags`，这一步会连带触发 CI 重建并 `--clobber` 覆盖本地产物（坑 70 实测）；
+ * **2026-09-15 决策 B2 已移除该触发**，故此路径不再引发重建。
  */
 function pushBranchOnly() {
   const tag = `v${version}`;
@@ -504,7 +508,7 @@ async function publishLocal() {
     die(`匿名复核失败：${base}/latest.yml 或 SHA256SUMS 不可达——客户端更新会 404`);
   }
   log('✓ 本地发布完成（应用内检查更新可直接命中）');
-  log('提醒：本次未出 mac 包；需要 mac 产物时用 workflow_dispatch 跑 release-mac（不要推 tag，否则会触发 CI 重建并覆盖本地产物）');
+  log('提醒：本地产物即权威（B2 后 tag 不再触发 CI 重建）；mac 产物需为每个版本手动 `gh workflow run release-mac.yml` 补一次');
   log(`提醒：更新说明请人工写入 Release（gh release edit ${tag} --notes-file <file>）`);
 }
 

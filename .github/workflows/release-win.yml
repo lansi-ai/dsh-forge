@@ -1,15 +1,15 @@
 # Windows 发布工作流：GitHub Actions windows runner 构建 NSIS 安装包 + 便携包，
 # 上传到 package.json version 对应的 v{version} Release（三通道描述符 latest.yml 一并上传）。
-# 触发：push v* tag（按 tag 代码构建）；或 workflow_dispatch（为已有 tag 的 Release 追加 Win 产物）。
+# 触发：**仅 workflow_dispatch**（2026-09-15 按坑 70 决策 B2 移除 `push: tags`）。
+# 原因：`gh release create --target main` 会在远端隐式建 tag，而单个 tag 创建会发 push 事件 →
+# 本 workflow 会立刻重建并用 `--clobber` 覆盖 `--publish-local` 的本地产物（rc.5 实测）。
+# 移除后：**本地产物 = 权威产物**；需要 CI 重出 Windows 包时手动 Run workflow（可指定分支/ref）。
 # 与 release-mac.yml 平行：mac 走 macos runner，win 走 windows runner，产物汇入同一 v{version} Release。
 # Release 由 mac/win 任一 workflow 幂等创建（gh release create 已存在则忽略），互不阻塞。
 name: release-win
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - 'v*'
 
 permissions:
   contents: write

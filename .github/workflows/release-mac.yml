@@ -1,14 +1,14 @@
 # macOS 发布工作流：GitHub Actions macos runner 构建 dmg + zip（arm64/x64 双架构），
 # 经 electron-builder --publish always 直接上传到 package.json version 对应的 v{version} Release。
-# 触发：push v* tag（按 tag 代码构建）；或 workflow_dispatch（检出 main 最新代码构建，
-# 用于为已有 tag 的 Release 追加 mac 产物，本机 Windows 无法本地打 dmg）。
+# 触发：**仅 workflow_dispatch**（2026-09-15 按坑 70 决策 B2 移除 `push: tags`）。
+# 原因：`gh release create --target main` 会在远端隐式建 tag，而单个 tag 创建会发 push 事件 →
+# 本 workflow 会立刻重建并用 `--clobber` 覆盖 `--publish-local` 的本地产物（rc.5 实测）。
+# 移除后：Windows 以本地产物为准；**mac 产物需为每个版本手动 Run workflow 一次**（检出 main 最新
+# 代码构建，本机 Windows 无法本地打 dmg）。
 name: release-mac
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - 'v*'
 
 permissions:
   contents: write
