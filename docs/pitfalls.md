@@ -994,4 +994,51 @@
   3. **「重跑」≠「跑新代码」**：`Re-run failed jobs` 固定用该次运行的 commit 与 YAML（`run_attempt` +1 可判别；本次 attempt=2 仍 422 即是此因）。修 CI 必须走 `workflow_dispatch` 或新 tag。
   4. **更新链排障先读产物清单，再读客户端代码，别从错误文案反推需求**：`GET /releases/tags/<tag>` 的资产名列表一步就能指向"产物没上传"；而 `Cannot find latest.yml` 曾被误读成"缺 `latest-rc.yml`"（**客户端从不请求该名**，坑档更正）。
 
+---
+
+## 坑 67：匿名 GitHub API 限流（**IP 级**）让「一条命令装插件」直接不可用 —— 默认分支查询没有回退
+
+- **现象**：`--install-plugin github:<owner>/<repo>` 在匿名 API 配额耗尽时直接失败，流程终止在「取默认分支」这一步；而 codeload 侧的 tarball 下载本身不受影响（即**限流 ≠ 资源不可达**）。
+- **根因**：`src/forge-host/plugin-install.ts` 取默认分支只走 GitHub API（`defaultBranchOf()` → `GET /repos/<owner>/<repo>`），而匿名 API 限流是 **IP 级**的（60 次/小时，共享出口/公司网络会被整片拖下水）——「一条命令装插件」这条体验不该由别人的请求量决定；而真正取包的 codeload **不计入**该限额。
+- **解法**（2026-09-14，`src/forge-host/plugin-install.ts`）：新增 `resolveDefaultBranch()` —— 先问 API，失败即 `log.warn`（带 `summarizeError` 原文）并**回退探测** `main` / `master`：HEAD `https://codeload.github.com/<owner>/<repo>/tar.gz/refs/heads/<candidate>`，第一个可达者胜；两者都不通则把**原始错误**抛出（不吞、不替换成"仓库不存在"）。
+- **复盘要点**：
+  1. **「为拿一个可猜的元数据而调 API」的地方都要备确定性回退**：默认分支只是**参数**，不是资源本体；把参数获取变成单点依赖，等于把别人的配额绑进自己的主流程。
+  2. **限流是 IP 级而非账号级**：匿名调用共享出口、不可控；判定看响应体（rate limit）而不是看失败率。
+  3. **回退失败要抛原始错误**：否则「被限流」会被误报成「仓库/分支不存在」，把用户引到错误的排查方向（同族教训见坑 66 复盘要点 4）。
+  > 本条据上一轮会话产物与代码注释整理（未在本次会话复现限流现场），档案留痕以便发版口径完整。
+
+---
+
+## 坑 68：打包态 `glob`/`grep` 一律报 `ripgrep provider failure` —— 上游解析出的 `rg.exe` 指向 **`app.asar` 内**，Windows 无法启动归档里的文件
+
+- **现象**：**安装版**（win setup；0.1.1-rc.3 / rc.4 均复现）里模型每次调用 `Glob` / `Grep` 都失败，报错原文：
+  `Error: glob subprocess failed before reporting an outcome (ripgrep provider failure)`。
+  与工作区内容、pattern、**沙箱模式均无关**（空目录与含文件目录、`*` / `**/*` / `**/*.js` 完全一致；**切到 `danger-full-access` 仍然失败**），而 **`npm run dev` 一切正常**；同一会话里 `pwsh` 工具正常。用户侧单变量复核这三条即已把「参数问题 / 沙箱管道问题 / 文件权限问题」全部排掉。
+
+- **根因（两段拼接，缺一段就会误判）**：
+  1. **报错语义**：`dsh-tool-fs-search` 有两条启动期错误分支——只有「目标进程**根本没起来**」才会走到 `handle.done` 的拒绝。链路 = `launchWindowsJob` 把启动失败经 IPC 交给 `direct.reject`（`dsh-subprocess-local/lib/index.js:521-541`）→ `bindManagedProcess` 的 `launch.direct.then(settle, fail)`（`lib/runner-launch-COYGu0Dl.js:1090-1101`）→ 句柄 `done` 拒绝 → 工具侧 `catch` 报「provider failure」。**故「报错落在 `handle.done`」不能推出「进程已成功启动」**（这一句曾被写成结论，方向完全反了）。
+  2. **真正没起来的命令**：`@vscode/ripgrep` 的 `rgPath` 来自 `require.resolve`（`@vscode/ripgrep/lib/index.js:9-17`），打包后**恒为** `…\resources\app.asar\node_modules\@vscode\ripgrep-win32-x64\bin\rg.exe`。electron-builder 的 smartUnpack **确实**把该 exe 解到了 `app.asar.unpacked`，但**解析出的字符串不变**；Electron 的 asar 垫片只覆盖 fs（于是 `existsSync` 返回 true、解析"看似正常"），而 Windows 的 `CreateProcess` 不认识归档 → 启动即 ENOENT。dev 模式 `node_modules` 是真实目录，故**只在打包态暴露**。
+
+- **取证**（在**安装版自己的 asar** 上复刻上游解析 + 启动，Electron Node 模式，避免造场景）：
+  ```
+  require.resolve('@vscode/ripgrep-win32-x64/bin/rg.exe') → …\resources\app.asar\node_modules\…\bin\rg.exe
+  spawnSync(上面这个路径)                                  → status null, ENOENT
+  spawnSync(…\app.asar.unpacked\…\bin\rg.exe)              → status 0, "ripgrep 15.0.0 (rev 3a612f88b8)"
+  ```
+  顺带**证伪另一条流行误判**：上游 `dsh-sandbox-windows-acl` README 那条 EPERM 限制原文限定为「**confined grandchildren** / **受限进程内** `spawn(..., { stdio: 'pipe' })`」，而 app 链路里**创建管道的是无限制的 runner**（主进程 → runner、runner → 目标），受限的只有最终目标进程本身；在受限 pwsh 里再套一层 `node` 去 spawn 才会复现 EPERM —— **那是嵌套探针的自伤，不是 app 的成因**。因此「放宽沙箱以允许命名管道」这条整改方向是错的：放着沙箱改也治不好（`danger-full-access` 下同样失败，已实测）。
+
+- **解法**（2026-09-15，零上游耦合）：在**既有的** `ctx.subprocess` 启动咽喉（`src/forge-host/subprocess-run-as-node.ts`，与 D-29/D-30 同一注入点、不新增注入点）加一层 asar 路径改写：
+  - `toUnpackedAsarPath(value, exists = existsSync)`：含 `\app.asar\` 特征段的路径 → `\app.asar.unpacked\` 孪生，**仅当孪生真实存在**时替换（已是 unpacked 的不重复改写）；
+  - `withUnpackedAsarSpecArgv(spec)`：遍历 `spec.argv` 全部字符串元素**原地**改写（兼顾 `pwsh -c "<exe>"` 这类把程序写在参数里的形态）；
+  - 挂在既有的 `withRunAsNodeSpecEnv` 上（`spec.env` 注入的同一处），未动全局 env、未动上游。
+  双条件收窄的收益：runner 自身入口（`app.asar\…\runner.js`）与本模块注入的 asar 内预载脚本（`app.asar\dist\forge-host\win32-console-preload.js`）**都没有 unpacked 孪生** → 保持原样，Electron 读 asar 的能力不受影响（探针实测 `true`）。单测 `test/asar-unpacked-path.test.cjs` 6 例（孪生存在改写 / 孪生缺失原样 / 已 unpacked 不重复 / 非 asar 原样 / 原地语义 + env 合并 / 无 argv 不报错）；typecheck / lint / build / **50 单测**全绿。
+
+- **复盘要点**：
+  1. **只要用了 asar，就必须问一句「谁会拿这个路径去 CreateProcess」**：Electron 的 asar 透明层只覆盖 fs 与 `require`，**不覆盖进程创建**；`require.resolve` 返回的字符串永远带 `app.asar`。凡「上游用模块解析拿到可执行文件路径、再交给 subprocess 拉起」的设计（本仓 = ripgrep），打包态必然踩。
+  2. **「dev 好用、打包不行」是 asar 类问题的第一指纹**：先用这条分叉，再去怀疑沙箱/权限/参数（本次若先信了管道假设，会一路改到错误的层）。
+  3. **判断"进程有没有起来"要读代码路径，不要读错误措辞**：两条错误分支的文案都像"运行失败"，只有一条对应"启动失败"；靠 `direct.reject → handle.done` 这条链才能定性。
+  4. **别用嵌套探针给 app 链路定罪**：在受限进程里复刻「受限进程内 spawn」，只证明了那条**已知限制**；跨层复刻要么在同层（无限制进程）做，要么直接把被测链路的输入/输出录下来。
+  5. **修在"共用的咽喉"而不是"某个工具"**：改写放在 `ctx.subprocess` 启动面（本仓所有子进程工具都经此），既救 rg，也覆盖未来任何"解析出的可执行文件落在 asar 内"的情形。
+  6. **验证要贴着边界**：dev 模式**无法**验证这类修复（没有 asar 层，新代码恒走"不改写"分支），必须用安装版 asar 复刻或装新包实机——否则会拿到"跑通了"的假阳性。
+
 

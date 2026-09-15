@@ -333,4 +333,12 @@
 - 变更：`src/forge-host/win32-console.ts`（`AttachConsole` 优先 → `AllocConsole`+隐藏兜底；幂等、绝不抛）+ `win32-console-preload.ts`（runner 预载入口）+ `subprocess-run-as-node.ts` 双注入点（`child_process.spawn` argv 与 `spec.argv`）+ `main.ts` 启动即挂并落日志 + `package.json` 显式声明 `koffi`
 - 状态：**verified（2026-09-14 · 用户实机确认）**——`workspace-write` 下 pwsh 恢复可用（原先恒 `0xC0000142`、需改用 `danger-full-access`，**R23 随之 closed**）；闪窗与 `0xC0000142` 为同一根因（创建者无控制台 → 受限令牌下自建控制台死在 DLL 初始化 / 普通令牌下自建出可见窗口），同一适配一并消除；typecheck / lint / 30 单测 / build 全绿
 
+### #26 · 安装版 `Glob` / `Grep` 全挂：`ripgrep provider failure`（dev 正常）
+
+- 环境：**安装版**（`%LOCALAPPDATA%\Programs\dsh-forge\DSH Forge.exe`，0.1.1-rc.4，基线 0.1.5-rc.2）；报告 2026-09-15
+- 第一现场：对话里模型调 `Glob` → `Error: glob subprocess failed before reporting an outcome (ripgrep provider failure)`（同一会话 `pwsh` 工具正常）；用户单变量复核：**`danger-full-access` 下同样失败**、**`npm run dev` 下正常**、空目录/含文件目录与各种 pattern 表现一致
+- 根因（坑 68）：`@vscode/ripgrep` 的 `rgPath` 由 `require.resolve` 得来，打包后**恒指向 `app.asar` 内**的 `…\bin\rg.exe`（electron-builder 已把 exe 解到 `app.asar.unpacked`，但解析出的字符串不变；asar 垫片只覆盖 fs，`existsSync` 因此为 true、解析"看似正常"）→ Windows `CreateProcess` 无法启动归档内文件 → runner 目标启动失败 → `direct.reject` → `handle.done` 拒绝 → 工具报「provider failure」。dev 模式无 asar 层，故只在打包态暴露
+- 变更：`src/forge-host/subprocess-run-as-node.ts` 在既有 `ctx.subprocess` 启动咽喉新增 asar → `app.asar.unpacked` 路径改写（`toUnpackedAsarPath` + `withUnpackedAsarSpecArgv`，双条件收窄）；新增单测 `test/asar-unpacked-path.test.cjs`
+- 状态：**fixed（2026-09-15 · 坑 68）**——typecheck / lint / build / 50 单测全绿；在安装版自己的 asar 上复刻验证「改写后 rg 可启动（`ripgrep 15.0.0`），改写前 ENOENT」；**待随 v0.1.1-rc.5 装机后实机点验 glob / grep**
+
 
