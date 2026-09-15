@@ -270,9 +270,14 @@ const DESKTOP_OVERLAY_PATCHES: any[] = [
       { id: 'tool-ralph', name: '@deepseek-ai/dsh-tool-ralph', config: { subagentProvider: 'spawn', maxRounds: 64 } },
       { id: 'tool-str-replace-editor', name: '@deepseek-ai/dsh-tool-str-replace-editor', config: { maxOutputChars: 16000 } },
       { id: 'repeat-tool-reminder', name: '@deepseek-ai/dsh-repeat-tool-reminder', config: { thresholds: [3, 5, 8], argumentsPreviewChars: 500 } },
-      { id: 'web', name: '@deepseek-ai/dsh-web', config: { searchProvider: 'deepseek-official' } },
+      // web 抓取通路（对齐官方 dsh-base 三行）：`web` 的 `fetchProvider` 键、`web-fetch-http`
+      // provider 行二者缺一，`ctx.web.fetch()` 就恒抛 WEB_PROVIDER_UNAVAILABLE
+      // （"no usable web provider is registered"）——此时 `tool-web` 即使 fetch:true 也只是
+      // 「工具在、provider 不在」（web_search 不受影响：search/fetch 是两个独立 provider 仓储）。
+      { id: 'web', name: '@deepseek-ai/dsh-web', config: { searchProvider: 'deepseek-official', fetchProvider: 'http' } },
       { id: 'web-search-deepseek', name: '@deepseek-ai/dsh-web-search-deepseek', config: { apiKeyEnv: 'DEEPSEEK_API_KEY' } },
-      { id: 'tool-web', name: '@deepseek-ai/dsh-tool-web', config: { fetch: false, searchTimeoutMs: 60000 } },
+      { id: 'web-fetch-http', name: '@deepseek-ai/dsh-web-fetch-http' },
+      { id: 'tool-web', name: '@deepseek-ai/dsh-tool-web', config: { fetch: true, searchTimeoutMs: 60000 } },
       { id: 'tools', name: '@deepseek-ai/dsh-tools' },
       // 动态 Cordis 包宿主半（agent 预设 `cordis` = 创造模式的硬依赖）：
       // 提供 `dynamicCordisRunner`（定义注册表 + node:vm 沙箱 + 运行往返）与 `cordisInspect`；

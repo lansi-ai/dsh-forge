@@ -328,20 +328,28 @@
         thresholds: [3, 5, 8]
         argumentsPreviewChars: 500
 
+    # web 抓取通路（对齐官方 dsh-base 三行）：`web` 的 `fetchProvider` 键、`web-fetch-http`
+    # provider 行二者缺一，`ctx.web.fetch()` 就恒抛 WEB_PROVIDER_UNAVAILABLE
+    # （"no usable web provider is registered"）——此时 `tool-web` 即使 fetch:true 也只是
+    # 「工具在、provider 不在」（web_search 不受影响：search/fetch 是两个独立 provider 仓储）。
     - id: web
       name: '@deepseek-ai/dsh-web'
       config:
         searchProvider: deepseek-official
+        fetchProvider: http
 
     - id: web-search-deepseek
       name: '@deepseek-ai/dsh-web-search-deepseek'
       config:
         apiKeyEnv: DEEPSEEK_API_KEY
 
+    - id: web-fetch-http
+      name: '@deepseek-ai/dsh-web-fetch-http'
+
     - id: tool-web
       name: '@deepseek-ai/dsh-tool-web'
       config:
-        fetch: false
+        fetch: true
         searchTimeoutMs: 60000
 
     - id: tools
