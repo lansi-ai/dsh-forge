@@ -1041,4 +1041,59 @@
   5. **修在"共用的咽喉"而不是"某个工具"**：改写放在 `ctx.subprocess` 启动面（本仓所有子进程工具都经此），既救 rg，也覆盖未来任何"解析出的可执行文件落在 asar 内"的情形。
   6. **验证要贴着边界**：dev 模式**无法**验证这类修复（没有 asar 层，新代码恒走"不改写"分支），必须用安装版 asar 复刻或装新包实机——否则会拿到"跑通了"的假阳性。
 
+---
+
+## 坑 69：Windows PowerShell 5.1 下「管道喂 stdin 给原生程序」不可靠 —— `git credential fill` 报 `missing protocol field`，发版脚本首步即挂
+
+- **现象**：`powershell -ExecutionPolicy Bypass -File .tmp/release-rc5.ps1` 在取 gh token 那步中止：
+  `fatal: refusing to work with credential missing protocol field` → 脚本按 fail-fast 抛「未能从 git 凭据库取到 token」。
+  同一段代码在**另一个终端**（PowerShell 7）里跑得好好的——`username=lansi-ai` / `password=ghp_…` 正常返回。
+- **根因**：**Windows PowerShell 5.1** 把字符串管道给原生程序时 **stdin 传递不可靠**（两种写法都复现：含 `` `n `` 的单个多行串、以及字符串数组逐行喂）→ git 读不到 `protocol=` 字段，只能报缺字段；而 PS 7 同一写法正常。判据 = 报错文案里的 **`missing protocol field`**（不是"没凭据"，是"没收到输入"）。
+- **解法**（2026-09-15，`.tmp/release-rc5.ps1`，一次性发版辅助脚本）：
+  1. 改从 git 的 **store 明文库**读：`~/.git-credentials` 里就有 `https://lansi-ai:<PAT>@github.com`，正则取出 → `$env:GH_TOKEN`（跨 PS 版本稳定，且**不落盘、不回显**）；
+  2. 补 **gh 的 PATH 兜底**（`%ProgramFiles%\GitHub CLI`，新装场景不在 PATH）；
+  3. 脚本保持 **UTF-8 with BOM** —— 中文 PS1 在 5.1 下按 GBK 解码会直接把语法打碎（本仓 `build/installer.nsh` 已是同款坑）；
+  4. fail-fast：取不到 token 就 `throw`，不让链路跑到一半（`npm run dist` 之后才失败最贵）。
+- **复盘要点**：
+  1. **辅助脚本要按「目标 shell 版本」验证**：`powershell`（5.1）与 `pwsh`（7）是两套行为，写 PS1 时先确认用户会用哪个跑（本次我是在 PS7 验的，于是漏了）。`$PSVersionTable.PSVersion` 是第一步就该打的日志。
+  2. **别把「管道喂 stdin」当通用手法**：给原生程序传输入优先用「命令行参数 / 临时文件 / 直接读文件」，管道 stdin 在 PS 5.1 下是雷区（`git credential fill` 这类读 stdin 的工具最容易中招）。
+  3. **中文 PS1 必须带 BOM**：不带 BOM 时 5.1 按 ANSI/GBK 解码，中文注释就可能编出 `"`、`\`、`` ` `` 字节而报"字符串未终止"这类迷惑语法错。
+  4. **凭据获取要有第二条路**：机器上有 `manager`+`store` 双 helper 时，store 明文库是一条确定性的兜底（本次正是靠它救场）；但别把 token 打进日志/脚本。
+
+---
+
+## 坑 70：`gh release create --target main` 会**隐式创建远端 tag** → 触发 tag-push 类 CI → `--clobber` 覆盖本地产物（`--publish-local` 的前提被证伪）
+
+- **现象**：`npm run release -- 0.1.1-rc.5 --publish-local` 全程成功（本地 5 资产上传、资产核对通过、脚本自报 `✓ 本地发布完成`）；但几分钟后同一个 Release 变成 **15 个资产**，且 `setup.exe` 从本地的 `138,352,536` 变成 **`138,352,091`**（`updatedAt` = CI 上传时刻）。Actions 里凭空多出 `release-win`（4m4s）+ `release-mac`（4m18s）两条 **`event=push`、`headBranch=v0.1.1-rc.5`** 的成功运行 —— 而用户**没有手动推过 tag**，脚本也只推了 main（`pushBranchOnly`）。
+- **根因**：设计假设「不推 tag 就不会触发 CI」不成立。**GitHub Release 必然绑定一个 tag**：`gh release create --target main` 在远端 tag 不存在时会**自己把 tag 建出来**（指向 `main` 当前提交），而 GitHub 对**单个** tag 创建会发出 `push` 事件（Actions 文档亦注明「一次创建超过 3 个 tag 才不产生事件」）→ 命中本仓 `release-{win,mac}.yml` 的 `on: push: tags: v*` → 双平台重建 → `gh release upload --clobber` 把本地产物换掉。
+- **取证**：`git ls-remote origin refs/tags/v0.1.1-rc.5` → `3c978179…`（= main HEAD；该 tag 此前只存在于本地）；两条 tag-push 运行的起始时间与 Release `createdAt` 相差十余秒（workflow 调度延迟）；`gh release view --json assets` 给出的大小/`updatedAt` 与本地产物不同、与 CI 构建一致。
+- **现状与影响**：Release 最终是**自洽的 CI 产物**（`latest.yml` 的 `size` 与实际上传资产一致、`SHA256SUMS`/`SHA256SUMS-mac` 由各 CI 现算现传）→ 更新链可用、无功能损失；损失的是「以本地产物为准」这一诉求，以及每次发版白跑一遍双平台 CI（约 5 分钟）。
+- **复盘要点**：
+  1. **「不推 tag」不等于「没有 tag 事件」**：任何以"绑定 tag"为前提的资源（GitHub Release）创建都会在远端产生 tag；仓库若对 tag 有 CI 触发，就必然被激活。做「绕过 CI 的本地直发」前先确认目标平台是否允许无 tag 的 Release（GitHub：不允许）。
+  2. **`--clobber` 是"后到者赢"**：本地 138MB 上传耗时长（数分钟），CI 反而后发先至 → 本地产物必被覆盖。凡「本地/云端双路径写同一资产」的设计，必须显式约定唯一权威来源，否则就是这次的结果。
+  3. **验收要看"最终态"而不是"当次成功"**：脚本自报完成 ≠ 资产定型；关键动作后应复查远端最终状态（`gh release view --json assets` 的 `size`/`updatedAt`），别只信退出码——本次正是靠这一步才发现资产被替换。
+
+## 坑 71：`no usable web provider is registered` 的真因是**宿主 roster 抄漏 provider 行**，不是网络/工具故障
+
+- **现象**：`web_fetch` 对**任何** URL 都报 `Error: no usable web provider is registered`（可达站点与被墙站点一视同仁）；同一会话 `web_search` **正常**返回结果 → 极易误判为「网络链路断裂」或「服务不稳定／状态会漂移」（用户首轮实测正是这样记录，且第二轮又"自行恢复"，据此写成"临时故障"）。
+- **根因**：抛点在上游 `dsh-web` 的 `resolveProvider()`——`ctx.web.fetch()` 在 **fetch provider 集合为空**（或全部 `available()===false`）时抛 `WEB_PROVIDER_UNAVAILABLE`。forge 的 roster（`src/forge-host/boot.ts` §1 + `forge-patch.yml`）**整行漏抄**官方 `dsh-base` 的 `{ id: 'web-fetch-http', name: '@deepseek-ai/dsh-web-fetch-http' }`，`web` 行少抄 `fetchProvider: 'http'` 键，`tool-web` 还写成 `fetch: false`（官方 base 为 `true`；实际生效值由 agent 预设决定，故工具仍在）= **工具在、provider 不在**。
+- **取证**：全仓 grep `web-fetch` 零命中（`boot.ts` / `forge-patch.yml` 均无该行）；对照官方 `dsh-base/cordis.patch.yml` web 段三行俱全；`searchProviders` 与 `fetchProviders` 是**两个独立注册表**（`dsh-web` 源码），故 search 正常而 fetch 恒挂。
+- **解法**：三处逐字对齐官方（`web` 行补 `fetchProvider: 'http'`、新增 `web-fetch-http` 行、`tool-web` 改 `fetch: true`），两个 roster 文件同步。同类坑 53/55/62：**宿主 roster 抄官方必须连 insert 行与 config 键一起抄**。
+- **复盘要点**：
+  1. **「对每个目标都失败」= 确定性缺陷，不是抖动**：变量不随目标变化（可达站点与被墙站点表现完全一致）时先查装配/注册面，别记成"偶发"——本次台账里一条"状态会漂移/临时故障"的结论就是这么来的，已被证伪并更正（dogfood #27）。
+  2. **分清「工具的开关」与「工具的 provider」**：`tool-web` 的 `fetch` 只决定工具是否暴露，能不能真抓由 `fetchProviders` 决定；两者都缺时报的是同一个错，只盯工具开关会查反方向。
+  3. **「搜得到」不能证明「抓得到」**：搜与抓是两套注册表、两条配置键，任一为空都会以同样的错误串暴露。
+
+## 坑 72：Node/undici 出口「不装策略 = 恒直连」——安装是 **launcher 的职责**，Electron 宿主没人干，于是「工具明明支持代理却抓不到被墙站点」
+
+- **现象**：`web_fetch` 抓境外站点恒 `TypeError: fetch failed`（可达站点正常、非 2xx 正常返回、DNS/重定向类错误文案清晰）；同机系统代理 `127.0.0.1:7890` 在监听、其它工具经它可通（同 URL 换 `curl -x` 即 200，出口 IP 为境外）。用户期望是「**系统代理就该走代理**」。
+- **根因**：上游 `@deepseek-ai/dsh-http-proxy` 是 **library 而非插件**（策略"每进程只有一个答案"），`proxyRouteFor(url)` 在**未安装策略**时恒返回 `DIRECT_ROUTE`；而 `dsh-web-fetch-http` 正是**先用 `proxyRouteFor` 选分支**（proxied → `requestVia` 走全局 dispatcher；direct → `requestPinned` 自建 Agent + DNS 钉住），故**没人装策略 = 永远直连**。官方由 **launcher 在首个插件挂载前**调 `installProxyFromEnvironment`；Electron 宿主不是 launcher → 全树没有调用方。
+- **取证**：`installProxyFromEnvironment` 在 `node_modules/@deepseek-ai` 内**只有声明、没有调用**（全树 grep）；进程环境变量无 `HTTP(S)_PROXY`；真实 Electron 运行时探针（`npx electron` + `--user-data-dir` 落在工作区内）打印 `resolveProxy("https://example.com") = "PROXY 127.0.0.1:7890"`，安装后 `proxyRouteFor(google).proxied = true`、回环 `false`、`dispose` 后 `false`。
+- **解法**：新增 `src/forge-host/forge-node-proxy.ts`，把 Node 出口接到**同一份网络设置**：`direct` = 释放策略；`system` = 取 Chromium 已解析好的**系统代理**（`session.defaultSession.resolveProxy`，与渲染进程同源；解析为 DIRECT 时回落进程环境变量）**镜像**给 undici；`manual` = 用既有手动规则解析出的 `host:port`（SOCKS 上游不支持 → 记 warn 后直连）。挂载点取既有 `applyInternal`（Chromium 侧成功才动它），`package.json` 显式声明依赖。
+- **复盘要点**：
+  1. **「工具不支持某能力」先怀疑"宿主没做上游假设的准备工作"**：代理库把安装责任留给 launcher，与坑 61（子进程 runtime）、坑 63（控制台前提）同类——**Electron 宿主缺位的是"启动动作"，不是"功能实现"**。
+  2. **只设环境变量可能不够**：消费方可能"先用策略选分支、再决定用不用环境变量"，此时必须调**安装 API**，写 `process.env` 不生效。
+  3. **系统代理要"镜像"不要"重读"**：Chromium 已经把系统代理解析好了（含 PAC），Electron 侧自己读 WinINET 不现实；代价是 PAC 按 host 变化时属**采样近似**（策略每进程一个答案），且运行期改代理不自动感知（需重新应用设置或重启）。
+  4. **网络层错误"信息少"不等于"链子断了"**：undici 把真因放在 `error.cause`，provider 原样重抛（`catch { close(); throw error }`）→ 只能看到 `TypeError: fetch failed`（**open**：按铁律不改官方代码，此 DX 缺口记为上游问题；将来自研 web 工具族时自带解包）。
+
 

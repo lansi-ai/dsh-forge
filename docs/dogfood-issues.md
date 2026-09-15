@@ -339,6 +339,24 @@
 - 第一现场：对话里模型调 `Glob` → `Error: glob subprocess failed before reporting an outcome (ripgrep provider failure)`（同一会话 `pwsh` 工具正常）；用户单变量复核：**`danger-full-access` 下同样失败**、**`npm run dev` 下正常**、空目录/含文件目录与各种 pattern 表现一致
 - 根因（坑 68）：`@vscode/ripgrep` 的 `rgPath` 由 `require.resolve` 得来，打包后**恒指向 `app.asar` 内**的 `…\bin\rg.exe`（electron-builder 已把 exe 解到 `app.asar.unpacked`，但解析出的字符串不变；asar 垫片只覆盖 fs，`existsSync` 因此为 true、解析"看似正常"）→ Windows `CreateProcess` 无法启动归档内文件 → runner 目标启动失败 → `direct.reject` → `handle.done` 拒绝 → 工具报「provider failure」。dev 模式无 asar 层，故只在打包态暴露
 - 变更：`src/forge-host/subprocess-run-as-node.ts` 在既有 `ctx.subprocess` 启动咽喉新增 asar → `app.asar.unpacked` 路径改写（`toUnpackedAsarPath` + `withUnpackedAsarSpecArgv`，双条件收窄）；新增单测 `test/asar-unpacked-path.test.cjs`
-- 状态：**fixed（2026-09-15 · 坑 68）**——typecheck / lint / build / 50 单测全绿；在安装版自己的 asar 上复刻验证「改写后 rg 可启动（`ripgrep 15.0.0`），改写前 ENOENT」；**待随 v0.1.1-rc.5 装机后实机点验 glob / grep**
+- 状态：**fixed + 已发版（2026-09-15 · 坑 68）**——typecheck / lint / build / 50 单测全绿；在安装版自己的 asar 上复刻验证「改写后 rg 可启动（`ripgrep 15.0.0`），改写前 ENOENT」；修复已载入 **v0.1.1-rc.5**（Release 5 资产齐、`latest.yml` 代理下匿名 200 且 `path`/size 与资产吻合），**待装机实机点验 glob / grep**
+
+### #27 · `web_fetch` 对每个 URL 都报 `no usable web provider is registered`（并更正"临时故障 / 状态漂移"误判）
+
+- 环境：dev（基线 0.1.5-rc.2）；报告 2026-09-15（用户三轮实测报告 `web_fetch报告.md`）
+- 第一现场：`web_fetch` 对**每个** URL 均报 `Error: no usable web provider is registered`；同会话 `web_search` 正常（返回 8 条来源）。用户第 1 轮记为"完全不可用、几分钟后自行恢复"，第 2、3 轮正常，据此写成「服务稳定性：状态会漂移 / 可用性不是稳定属性」
+- 根因（坑 71）：forge roster 漏抄官方 `dsh-base` 的 `web-fetch-http` 插入行与 `web` 行的 `fetchProvider` 键 → `ctx.web.fetch()` 的 provider 集合为空 → 上游 `resolveProvider()` 抛 `WEB_PROVIDER_UNAVAILABLE`。**这是确定性缺陷**：不换进程/构建就 100% 必抛，"恢复"只可能是换了进程（重启后加载到新 roster）
+- 更正：报告第五节「服务稳定性：状态会漂移」的结论**不成立**——第 1 轮不是抖动，是本条缺陷；第 2/3 轮是修复生效后的正常态。报告另一处自我更正（`neverssl.com` 第 2 轮 3 连败 → 第 3 轮正常）同属该确定性窗口，非稳定缺陷
+- 变更：`src/forge-host/boot.ts` §1 + `src/forge-host/forge-patch.yml` 三处逐字对齐官方（`web` 行补 `fetchProvider: 'http'`、新增 `web-fetch-http` 行、`tool-web` 改 `fetch: true`）
+- 状态：**fixed（2026-09-15 · 坑 71）**——typecheck / lint / build / 50 单测全绿；用户实机 `web_fetch` 恢复可用
+
+### #28 · `web_fetch` 打不开被墙站点（Node 出口从不走代理；用户期望「系统代理就该走代理」）
+
+- 环境：dev（基线 0.1.5-rc.2）+ 系统代理 `127.0.0.1:7890`（`yincloudCore.exe`；经行为判定为**规则分流**——境内请求经它仍用真实出口 IP、境外走代理）；报告 2026-09-15（同 `web_fetch报告.md`）
+- 第一现场：`web_fetch https://www.google.com` → `TypeError: fetch failed`；同机同 URL 换 `curl -x http://127.0.0.1:7890` 得 200（出口 IP 境外 `87.83.109.242`）；可达站点与非 2xx 均正常。用户诉求：**`system` 模式就该走系统代理**，而不是必须手填地址
+- 根因（坑 72）：`dsh-http-proxy` 是 library，策略"每进程一个答案"，**不安装 = `proxyRouteFor` 恒直连**；官方由 launcher 安装，Electron 宿主无该段 → `dsh-web-fetch-http` 永远走 `requestPinned` 直连分支（工具本身支持代理，缺的是"装策略"这一步）
+- 变更：新增 `src/forge-host/forge-node-proxy.ts`（`direct` 释放策略 / `system` **镜像** `session.resolveProxy` 的系统代理 + DIRECT 时回落进程 env / `manual` 用解析后的 `host:port`，SOCKS 记 warn 后直连）+ `forge-proxy.ts` 接入既有 `applyInternal`（Chromium 侧成功才动 Node 侧）+ `package.json` 显式声明 `@deepseek-ai/dsh-http-proxy`
+- 状态：**verified（2026-09-15 · 用户实机确认）**——真实 Electron 运行时探针：`resolveProxy = "PROXY 127.0.0.1:7890"` → 安装后 `proxyRouteFor(google).proxied = true`、回环 `false`、`dispose` 后 `false`；typecheck / lint / build / 50 单测全绿
+- open：① 上游 `web_fetch` 网络层失败恒 `TypeError: fetch failed`（`error.cause` 被吞，按铁律不改官方代码）；② 设置页无 `no_proxy` 排除项输入框（manual 目前只映射 `http_proxy`/`https_proxy`）；③ 运行期改系统代理不自动感知（需重新应用设置或重启）；④ 作用域为**进程级全局 dispatcher**——模型 API / MCP / 子进程一并受影响（回环自动旁路）
 
 
