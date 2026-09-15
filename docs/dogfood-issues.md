@@ -359,4 +359,15 @@
 - 状态：**verified（2026-09-15 · 用户实机确认）**——真实 Electron 运行时探针：`resolveProxy = "PROXY 127.0.0.1:7890"` → 安装后 `proxyRouteFor(google).proxied = true`、回环 `false`、`dispose` 后 `false`；typecheck / lint / build / 50 单测全绿
 - open：① 上游 `web_fetch` 网络层失败恒 `TypeError: fetch failed`（`error.cause` 被吞，按铁律不改官方代码）；② 设置页无 `no_proxy` 排除项输入框（manual 目前只映射 `http_proxy`/`https_proxy`）；③ 运行期改系统代理不自动感知（需重新应用设置或重启）；④ 作用域为**进程级全局 dispatcher**——模型 API / MCP / 子进程一并受影响（回环自动旁路）
 
+### #29 · 图片不可用（`read_image` 报 `does not declare image input`）——真因在**外部插件路由**，已在插件侧修复
+
+- 环境：dev（基线 0.1.5-rc.2）+ 默认模型 `workbuddy/deepseek-v4.1-flash`（`workbuddy` 路由由外部插件 `dsh-llm-app-credentials` 提供）；报告 2026-09-15
+- 第一现场：让模型读图 → `cannot read "…" as an image: model "deepseek-v4.1-flash" does not declare image input`（工具本身与网络均正常，可达站点与非 2xx 都无异常）
+- 归因（两层，缺一不可）：
+  - ① **闸门**（官方）：`dsh-tool-fs` 的 `assertImageCapableRoute` 要求会话路由解析出的模型**显式声明** `image` 输入，未声明即拒绝——这是设计如此，不是缺陷；
+  - ② **真因**（外部插件）：`AppCredentialsAdapter.resolveModel()` **从不设置** `inputModalities`，`modelSpecSchema` 里也没有该字段，且 `serialize.js` 会把图像块降级为 `[image omitted: this route is text-only]` → 与底层模型能力无关（官方目录里 `deepseek-flash` = DeepSeek-V41-Flash 本就声明 `text+image`）
+- 变更（插件源码 `E:\Projects\DSH\plugins\dsh-llm-app-credentials`，6 文件 + README）：`models[].inputModalities` 进 schema 与探测表（**仅 V4.1 声明 image**，其余不猜）；`resolveModel`/`listModels` 显式输出模态（缺省 `['text']`，不留"未知"）；`stream()` 只在「模型声明 image **且**本次请求确有图」时经 `ctx.attachments` 读图；`serialize` 改多模态发送（`image_url` 内联 data URL，**工具结果里的图另起一条 user 消息**——该线上 `tool` 消息不能带图）；新增 `imagePixelBudget`/`imageMaxBytes`（4 MP / 1 MB）
+- 状态：**verified（2026-09-15 · 用户实机确认）**——插件构建 exit 0；构建产物探针：`resolveModel(V4.1) = ["text","image"]`、`glm-5.3 = ["text"]`、未声明时 wire 逐字不变（零回归）；**网关实测接受内联图**
+- 备注：**非 forge 缺陷**（forge 侧零改动）；已装副本是 junction 指向源码，重建 `lib/` 后重启即生效；回退 = 去掉该模型的 `inputModalities`（配置层可改，无需重编译）
+
 
