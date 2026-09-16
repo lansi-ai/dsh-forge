@@ -1119,7 +1119,7 @@
 - **取证**：错误原文来自上游 body（非 DSH 文案，全仓库 grep `MissingSessionID`/`Console Go` 零命中于 `@deepseek-ai`）；`dsh-llm-pi-ai` 的 `headers` 字段与传递路径见上列行号；`dsh-llm-deepseek` 的会话头发送点见 `:1665`。
 - **解法**（**不动官方代码**，两层一起上，2026-09-15）：
   1. **配置层入口**（自有化设置插件）：`@lansi-ai/dsh-forge-settings-models` 的 provider 编辑器加「请求头」区——按 `llm-pi-ai` 家族（并用 schema `nodeAtPath` 兜底探测）渲染键值行编辑器，写 `providers.<route>.headers`（最小 `settings.mutate` pathOps，空表落成 unset）；命中 opencode 网关（路由 id 以 `opencode` 开头，或 baseURL host 属 `opencode.ai`）且未配会话头时给一行说明。校验口径对齐上游（名称走 RFC 7230 token、值禁 CR/LF/控制字符、重名大小写不敏感），非法时闸住提交。**这一层是通用能力**：任何网关要的自定义头都能配。
-  2. **逐会话自动化**（**独立插件包** `dsh-llm-opencode-session`，仓库 `lansi-ai/dsh-llm-opencode-session`，工作区 `E:\Projects\DSH\plugins\dsh-llm-opencode-session\`，经 `--install-plugin github:lansi-ai/dsh-llm-opencode-session[@ref]` 装进 `$DSH_HOME/profiles/dsh-forge/cordis.patch.yml`，由 profile 装载层装配并把裸名改写为**绝对入口路径**；导出 `name`/`inject`/`apply`，与外部插件同形态）：opencode 要的是**每段对话一个稳定 ID**（不是每请求换值），而静态配置表达不了 → `apply` 经 `ctx.effect` 安装出口补丁（卸载即还原）：只对 `opencode.ai` 域生效；请求已带 `x-opencode-session`（用户静态配置或上游将来自己发）**一律不覆盖 → 上游修好即自动 no-op**；会话 ID = `dsh-` + `sha1(model + 首条用户消息)` 前 32 位（同对话稳定、不同对话不同）；无正文（如 `GET /v1/models`）用进程固定 id；只**克隆**读请求体、失败一律原样发送；`apply` 内 try/catch（宿主对未激活条目会回滚整棵树，不该因「不缺头」让应用起不来）。出口选择依据：pi-ai 三种 wire 协议都走 `options?.fetch ?? globalThis.fetch`，而 `dsh-llm-pi-ai` 不注入自定义 fetch；openai/anthropic 两 SDK 的 `getDefaultFetch()` 是**调用时**读全局 `fetch`，故包装全局即可全覆盖。**该能力不进主包**（可选能力走外部插件通路，D-28）：主包内没有副本，删 profile 那一行即卸载。
+  2. **逐会话自动化**（**独立插件包** `dsh-llm-opencode-session`，仓库 `lansi-ai/dsh-llm-opencode-session`，工作区 `E:\Projects\DSH\plugins\dsh-llm-opencode-session\`，经 `--install-plugin github:lansi-ai/dsh-llm-opencode-session[@ref]` 装进 `$DSH_HOME/profiles/dsh-forge/cordis.patch.yml`，由 profile 装载层装配并把裸名改写为**绝对入口路径**；导出 `name`/`inject`/`apply`，与外部插件同形态）：opencode 要的是**每段对话一个稳定 ID**（不是每请求换值），而静态配置表达不了 → `apply` 经 `ctx.effect` 安装出口补丁（卸载即还原）：只对 `opencode.ai` 域生效；请求已带 `x-opencode-session`（用户静态配置或上游将来自己发）**一律不覆盖 → 上游修好即自动 no-op**；会话 ID = **人可读短标签** `dsh-<中文2字><字母2>`（如 `dsh-青竹aB`，v0.1.1 起；由 `sha1(model + 首条用户消息)` 确定性派生 → 同对话稳定、不同对话不同，且在 opencode 控制台「会话」列里认得出是哪段；可配 `labelStyle: ascii` → `dsh-Kx7Q`，见坑 76）；无正文（如 `GET /v1/models`）用进程固定标签；只**克隆**读请求体、失败一律原样发送；`apply` 内 try/catch（宿主对未激活条目会回滚整棵树，不该因「不缺头」让应用起不来）。出口选择依据：pi-ai 三种 wire 协议都走 `options?.fetch ?? globalThis.fetch`，而 `dsh-llm-pi-ai` 不注入自定义 fetch；openai/anthropic 两 SDK 的 `getDefaultFetch()` 是**调用时**读全局 `fetch`，故包装全局即可全覆盖。**该能力不进主包**（可选能力走外部插件通路，D-28）：主包内没有副本，删 profile 那一行即卸载。
 - **复盘要点**：
   1. **「官方设置页没有这个开关」≠「配置层不支持」**：先读上游 schema（本例 `headers` 一直在），再决定是自有化补 UI 还是真需要动传输层——前者零上游耦合、可回滚；后者才是这次的逐会话补丁（因为静态头**在语义上就做不到**逐会话）。
   2. **先问「上游要的是哪个粒度」再动手**：opencode 的口径是 **per conversation / stable**——每请求换值反而毁掉路由与提示缓存。静态配置能消 400，但把所有对话并成一个会话；要语义正确只能拿到**逐请求**的会话身份，而它只存在于请求里（DSH 的 `options.sessionId` 到 pi-ai 就断了），所以落在 `llm/stream` 之后的传输层。
@@ -1151,6 +1151,29 @@
   2. **「客户端说找不到文件」先读客户端源码，不要读自己的注释**：本次错误注释在仓库里存了数周，把「有条件回退」写成了「自动回退」。
   3. **发布链的产物清单要含渠道描述符**：只传 `latest.yml` 的链在 stable 渠道永远正常、在其它渠道永远坏 —— 这种「只有换渠道才暴露」的缺陷必须在链条层修，而不是每次发版手工补。
   4. **正式版装机 ↔ 预发布渠道是设计上的死路**：要跨过去只能手动装一次预发布包（或发一个正式版）。把这点写进发布说明，省掉用户重复点「检查更新」。
+
+
+## 坑 76：非 ASCII 的请求头值**根本进不了 undici**——`Headers.set` 只收 ByteString，中文要自己按字节映射
+
+- **现象**（2026-09-16，`dsh-llm-opencode-session` v0.1.1 把会话标签从 32 位 hex 改成 `dsh-青竹aB` 后，包内测试立刻红）：
+  `TypeError: Cannot convert argument to a ByteString because the character at index 4 has a value of 23506 which is greater than 255`
+  —— 抛出点是 `headers.set('x-opencode-session', 'dsh-青竹aB')`，**一个字节都没发出去**。
+- **根因**：Node 18+ 的全局 `fetch`/`Headers` 是 **undici**，其 `Headers.set/append` 按 **ByteString** 规范化入参（每个码元必须 ≤ `0xFF`）→ 任何 code point > 255 的字符直接抛 `TypeError`。而 **HTTP/1.1 规范本身允许头值含 obs-text（`0x80–0xFF`）**，Node 的 `http` 侧校验 `INVALID_HEADER_CHAR_REGEX = /[^\t\x20-\x7e\x80-\xff]/` 也放行 —— 也就是说「头值能不能带非 ASCII」在**两端口径不一致**：网线允许，客户端 API 不允许。
+- **取证**（本机实测）：
+  1. `new Headers().set('x', 'dsh-折桂tC')` → 上述 `TypeError`；换成 latin-1 映射串 `Buffer.from(label,'utf8').toString('latin1')` → 通过，且 `headers.get()` **原样返回那个映射串**（`"dsh-ææ¡tC"` 之类乱码），`new Request(url,{headers})` 里读回也是它 —— 所以**断言 `headers.get()` 看不到真实字节**；
+  2. 本地 socket 回环（`http.createServer` 收 raw 头）证明线上字节正确：送出的码元 `64 73 68 2d e6 8a 98 e6 a1 82 74 43` = 服务端收到的字节 = `dsh-折桂tC` 的 **UTF-8** 编码，`Buffer.from(raw,'latin1').toString('utf8')` 完全还原。
+- **解法**（`dsh-llm-opencode-session` 的 `toHeaderValue()`）：
+  ```ts
+  export function toHeaderValue(label: string): string {
+    if (/^[\x20-\x7E]*$/.test(label)) return label
+    return Buffer.from(label, 'utf8').toString('latin1')   // 码元 ≤0xFF，undici 按字节写出
+  }
+  ```
+  纯 ASCII 原样返回（零开销、零变化）；非 ASCII 走「UTF-8 → 逐字节 latin-1 码元」，undici 逐字节写线，服务端按 UTF-8 解回原文。测试侧配套 `decodeHeader()`（`Buffer.from(v,'latin1').toString('utf8')`）再断言语义值。
+- **复盘要点**：
+  1. **「能存进 JS 对象」≠「能过出口」**：字符串跨到协议边界时常被 ByteString/latin-1 归一，凡是要写进 **HTTP 头 / HTTP/2 伪头 / 归档文件名** 的非 ASCII，都要先问「这一层收什么编码」。
+  2. **给非 ASCII 留一条 ASCII 逃生门**：解码方（网关/中间件/日志）若按 latin-1 解释就会看到乱码；本插件因此保留 `labelStyle: 'ascii'`（`dsh-Kx7Q`），一行配置绕开，不必改代码。
+  3. **断言要打到真实字节上**：`headers.get()` 回读的是**映射后的串**，用它断言只能证明「存进去了」；「发出去的字节对不对」必须看出口（本地回环 server / 抓包 / 与 `toHeaderValue` 的 hex 对照）。本条已固化为包内单测（`toHeaderValue` 语义断言）＋一次性 socket 级 hex 复核。
 
 
 

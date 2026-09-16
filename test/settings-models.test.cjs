@@ -270,6 +270,10 @@ test('firstHeaderFailure：空行忽略、名称/值/重名校验', () => {
   assert.equal(pure.firstHeaderFailure([{ name: 'x-a', value: 'b' }]), undefined)
   same(pure.firstHeaderFailure([{ name: 'x a', value: 'b' }]), { index: 0, key: 'headerNameInvalid' })
   same(pure.firstHeaderFailure([{ name: 'x-a', value: 'bad\nvalue' }]), { index: 0, key: 'headerValueInvalid' })
+  // 非 ASCII（中文）必须被前置拦掉：undici 的 Headers.set 只收 ByteString，放过去会在真实发请求时抛
+  // TypeError（坑 76）。上游 assertValidHeaders 正是用 `new Headers([[name, value]])` 兜的同一道关。
+  same(pure.firstHeaderFailure([{ name: 'x-a', value: 'dsh-青竹aB' }]), { index: 0, key: 'headerValueInvalid' })
+  assert.equal(pure.firstHeaderFailure([{ name: 'x-a', value: 'dsh-\u00e9tC' }]), undefined, 'latin-1 可表示的字符应放行（obs-text）')
   same(pure.firstHeaderFailure([{ name: 'x-a', value: 'b' }, { name: 'X-A', value: 'c' }]), { index: 1, key: 'headerNameDuplicate' })
 })
 

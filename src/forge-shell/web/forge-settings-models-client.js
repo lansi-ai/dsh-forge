@@ -92,7 +92,7 @@ window.__ModuleLoader__.load({
       addHeader: 'Add header',
       removeHeader: 'Remove header',
       headerNameInvalid: 'A header name may contain letters, digits, and !#$%&\'*+-.^_`|~ only.',
-      headerValueInvalid: 'A header value cannot contain line breaks or control characters.',
+      headerValueInvalid: 'A header value cannot contain line breaks or control characters, and every character must fit in one byte — non-ASCII text (e.g. Chinese) cannot go into an HTTP header.',
       headerNameDuplicate: 'This header is already listed.',
       headerEmpty: 'No extra request headers.',
       opencodeHint: 'This route targets an opencode gateway. opencode requires a stable session ID in x-opencode-session on every request — without it the upstream refuses to route and answers 400 MissingSessionID (routing and prompt caching are lost).',
@@ -208,7 +208,7 @@ window.__ModuleLoader__.load({
       addHeader: '添加请求头',
       removeHeader: '删除请求头',
       headerNameInvalid: '请求头名称只能包含字母、数字与 !#$%&\'*+-.^_`|~。',
-      headerValueInvalid: '请求头值不能包含换行或控制字符。',
+      headerValueInvalid: '请求头值不能包含换行或控制字符，且每个字符必须能用一个字节表示——中文一类非 ASCII 文本放不进 HTTP 头。',
       headerNameDuplicate: '该请求头已存在。',
       headerEmpty: '暂无额外请求头。',
       opencodeHint: '该路由指向 opencode 网关。opencode 要求每个请求都带稳定的会话 ID（x-opencode-session），缺失时上游拒绝路由并返回 400 MissingSessionID（同时失去路由与提示缓存优化）。',
@@ -644,7 +644,15 @@ window.__ModuleLoader__.load({
 
     /** RFC 7230 token：请求头名称合法字符集（对齐上游 `assertValidHeaders` 的口径）。 */
     const HEADER_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/
-    /** 请求头值：可见 ASCII + 水平制表 + obs-text；禁 CR/LF/NUL 等控制字符。 */
+    /**
+     * 请求头值：可见 ASCII + 水平制表 + obs-text；禁 CR/LF/NUL 等控制字符。
+     *
+     * 上限钉在 `\xFF` 不是随手取的：上游 `assertValidHeaders` 的真身就是
+     * `new Headers([[name, value]])` 包在 try/catch 里，即**用 undici 的 ByteString 检查**兜底
+     * （错误文案 "…representable as bytes"）；码元 > `0xFF` 的字符（中文等）在真实发请求时
+     * 直接抛 `TypeError`，表现为「填的时候没报错、一发消息就炸」。故此处**前置拦掉**，
+     * 见坑 76（该坑正是「中文标签进不了 undici」）。
+     */
     const HEADER_VALUE_PATTERN = /^[\t\x20-\x7E\x80-\xFF]*$/
 
     /**
