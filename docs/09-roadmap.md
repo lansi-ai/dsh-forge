@@ -76,7 +76,7 @@
 - 性能达标（冷启动 ≤3s、常驻 ≤400MB 实测表）
 - 本地用量看板（session-telemetry-otel 物化，R-22）
 - 主题化（ui-theme token 覆盖，R-21）
-- 可选：桌面工具 `desktop_*`（默认关）
+- 可选：桌面工具 `desktop_*`（默认关）——**首个落地载体 = AI 自测驾驶器**（[`15-computer-use-testing.md`](15-computer-use-testing.md) / [ADR-009](adr/adr-009-ai-self-driver.md)）：agent 自主真机测试闭环（双实例 + 零端口管道 + CDP/AX），门禁 = agent 完成一次「改代码 → 自测 → 修复 → 留证」闭环
 
 ## M6 · 增强与自绘面（探索期，P2）
 - **harness 基线动态化（2026-08-26 新增，依赖 M4-b 更新基建）**：基线产物外置至 `userData/harness/<version>/` 版本化目录 + S1/S2/S3 拴合面兼容矩阵协商（版本声明契约 + 桌面侧 adapter 注册表）+ 复用 M4-b 描述符机制下载校验（manifest + SHA256）+ 多版本并存与启动失败自动回滚；门禁 = 应用内完成 `rc.8 → 0.1.1-rc.2` 切换（不重装应用、会话数据无损）。M4-d 首次 `0.1.1-rc.2` 升级仍走整包重发（sync-upstream SOP），作为动态化的对照基线

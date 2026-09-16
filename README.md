@@ -69,7 +69,9 @@
 | [`docs/12-references.md`](docs/12-references.md) | 全部依据：本地源码路径 + 官方/社区 URL 引用 + 现有插件 API 面盘点 |
 | [`docs/plugin-inventory.md`](docs/plugin-inventory.md) | **插件清单与自有化进度**：Host/Client 两侧完整插件树、桌面自有插件（`@lansi-ai/dsh-*`）、互斥排除清单、全量自绘（M6）逐阶段进度 |
 | [`docs/13-ui-design.md`](docs/13-ui-design.md) | **（二期可选）** forge-First 自绘 UI 愿景——暂缓，主线不依赖 |
-| [`docs/adr/`](docs/adr/) | 架构决策记录：[ADR-001 选 Electron](docs/adr/adr-001-electron-stack.md) · [ADR-002 宿主内嵌](docs/adr/adr-002-inprocess-host.md) · [ADR-003 IPC 载波](docs/adr/adr-003-ipc-fetch-carrier.md) · [ADR-004 装配模型](docs/adr/adr-004-profile-bundle-model.md) · [ADR-005 版本钉死](docs/adr/adr-005-version-pinning.md) · [ADR-006 自绘主面](docs/adr/adr-006-custom-ui.md)（暂缓·可选） · [ADR-007 旧插件兼容](docs/adr/adr-007-plugin-compat.md) |
+| [`docs/14-implementation-map.md`](docs/14-implementation-map.md) | 实现地图：程序组成、代码位置、关键链路（与代码同步更新） |
+| [`docs/15-computer-use-testing.md`](docs/15-computer-use-testing.md) | **AI 自测驾驶器**：双实例分离 + 零端口管道 + CDP/AX 混合，agent 自主真机测试闭环（设计稿） |
+| [`docs/adr/`](docs/adr/) | 架构决策记录：[ADR-001 选 Electron](docs/adr/adr-001-electron-stack.md) · [ADR-002 宿主内嵌](docs/adr/adr-002-inprocess-host.md) · [ADR-003 IPC 载波](docs/adr/adr-003-ipc-fetch-carrier.md) · [ADR-004 装配模型](docs/adr/adr-004-profile-bundle-model.md) · [ADR-005 版本钉死](docs/adr/adr-005-version-pinning.md) · [ADR-006 自绘主面](docs/adr/adr-006-custom-ui.md)（暂缓·可选） · [ADR-007 旧插件兼容](docs/adr/adr-007-plugin-compat.md) · [ADR-008 数据根分层](docs/adr/adr-008-data-root-layering.md) · [ADR-009 AI 自测驾驶器](docs/adr/adr-009-ai-self-driver.md)（提议） |
 
 ## 关键结论速览
 
