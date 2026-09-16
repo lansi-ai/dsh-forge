@@ -306,6 +306,12 @@ const DESKTOP_OVERLAY_PATCHES: any[] = [
       // 注：第三方插件 @lnyanhongyan/dsh-opencode-usage 因 peer 锁 rc.7 与 0.1.2 不兼容，
       // 已在 M4-d3 升级轮移除（package.json 依赖 + 本 insert + THIRD_PARTY_CLIENT_IDS）。
       // 待其升版后按 M1 门禁 ADR-007 重新装载。
+      //
+      // 注：opencode 逐会话会话头（`x-opencode-session`，坑 74）**不在本 roster**——它已抽成
+      // 独立插件包 `dsh-llm-opencode-session`（仓库 lansi-ai/dsh-llm-opencode-session），
+      // 经 `--install-plugin github:lansi-ai/dsh-llm-opencode-session[@ref]` 装进
+      // `$DSH_HOME/profiles/dsh-forge/cordis.patch.yml`，由 profile 装载层装配（D-28）。
+      // 可选能力不进主包：删那一行即卸载；主包不再内置副本。
     ],
   },
 

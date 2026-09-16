@@ -21,11 +21,17 @@ const NODE_GLOBALS = {
   URL: 'readonly',
   URLSearchParams: 'readonly',
   Response: 'readonly',
+  Request: 'readonly',
+  Headers: 'readonly',
+  FormData: 'readonly',
+  Blob: 'readonly',
+  fetch: 'readonly',
   AbortSignal: 'readonly',
   AbortController: 'readonly',
   TextEncoder: 'readonly',
   TextDecoder: 'readonly',
   crypto: 'readonly',
+  structuredClone: 'readonly',
 }
 
 /** 浏览器渲染器全局（src/forge-shell/web/*.js）。 */
@@ -57,10 +63,13 @@ const BROWSER_GLOBALS = {
   CustomEvent: 'readonly',
   DOMParser: 'readonly',
   getComputedStyle: 'readonly',
+  structuredClone: 'readonly',
 }
 
 export default tseslint.config(
-  { ignores: ['dist/', 'node_modules/', '.runtime/', '.electron-builder-cache/', '.tmp/', '.tools/', 'release/', 'docs/active-context.html', 'website/.vitepress/cache/', 'website/.vitepress/dist/', 'website/.vitepress/.temp/'] },
+  // `plugins/`：独立发布的插件包（各自独立仓库，源码在本地生成后推走），
+  // 由那个仓库自己的 lint/CI 负责（本仓 .gitignore 也已忽略）。
+  { ignores: ['dist/', 'node_modules/', '.runtime/', '.electron-builder-cache/', '.tmp/', '.tools/', 'release/', 'plugins/', 'docs/active-context.html', 'website/.vitepress/cache/', 'website/.vitepress/dist/', 'website/.vitepress/.temp/'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {

@@ -84,6 +84,11 @@ const CLIENT_EXCLUDE_IDS = new Set([
   // 仅排除该 Tab 包；「插件」section 外壳仍由官方 ui-settings-plugins 提供（含「插件配置」
   // Tab），故无需额外接管 section 本身。
   '@deepseek-ai/dsh-client-ui-settings-plugin-inventory',
+  // M6-P6 模型设置自有化：@lansi-ai/dsh-forge-settings-models 接管 `settings.section`
+  // （id='models', order=10）与两步 `settings.onboarding`（welcome-notice / deepseek-official）——
+  // 官方 ui-settings-models 是互斥副本，双激活会在同一 section id / 同一 onboarding list 上重复注册。
+  // 数据面零新增（llm/credentials/settings + discoverModels 五个 Remote 调用原样复用）。
+  '@deepseek-ai/dsh-client-ui-settings-models',
   // 注：0.1.5 官方 documentpreview（textpreview 换代包）**不入排除**——排查期曾临时排除，
   // 因其 apply 内 `provide("documentPreviews")` 的异步 effect 未落地即被同步访问而报
   // `cannot get property "documentPreviews" without inject`。该症状实为「main 槽位缺失
@@ -435,6 +440,16 @@ export function generateBootGraph(rev?: string, extraBundles?: BootBundleDecl[])
     // exports.inject 声明（slots/locale/remote），图谱 entry.inject 仅信息性包名边故恒 []。
     // external 边保证 ui-renderer（slots 来源）先于本件入图。
     { id: '@lansi-ai/dsh-forge-plugin-inventory', path: resolveLocalWebBundle('forge-plugin-inventory-client.js'), inject: [], external: ['@deepseek-ai/dsh-client-ui-renderer/client'], immediately: true },
+    // M6-P6 模型设置自有化（顶替官方 ui-settings-models，见 CLIENT_EXCLUDE_IDS）：
+    // 接管 `settings.section`（id='models', order=10，排在 General 之后、外观之前）+
+    // 两步 `settings.onboarding`（welcome-notice order=-100 / deepseek-official order=0）。
+    // 子槽位 `settings.models.provider-card`（keyed，entryKey=settingsNs）与
+    // `settings.models.footer`（list）契约 1:1 保留，第三方 provider-card 扩展位零改动继续工作。
+    // 数据面 = 官方五调用（llm/listProviders ∪ llm/listConfigurableProviders + settings 镜像
+    // + credentials/describe|set|unset + llm/discoverModels + settings/mutate）；服务等待在
+    // bundle 内 exports.inject 声明（slots/locale/remote*/settingsScope/settingsSchema），
+    // 图谱 entry.inject 仅信息性包名边故恒 []。external 边保证 ui-renderer（slots 来源）先入图。
+    { id: '@lansi-ai/dsh-forge-settings-models', path: resolveLocalWebBundle('forge-settings-models-client.js'), inject: [], external: ['@deepseek-ai/dsh-client-ui-renderer/client'], immediately: true },
     ...(extraBundles ?? []),
   ]
 

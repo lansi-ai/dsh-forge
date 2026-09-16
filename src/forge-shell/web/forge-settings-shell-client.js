@@ -12,8 +12,9 @@
  * 其余齿轮）——永不裂图。`theme.icon-change` 下行事件驱动全部导航图标刷新。
  *
  * V1 范围：面板框架 + 导航投影 + General 分区 + 触发行/标题/关闭。
- * V2 待补：连接恢复指示器、「打开配置文件」action、onboarding 投影（对应槽位已声明，
- *   官方注册者挂载后自动工作；外壳渲染位已预留）。
+ * V2 已补：onboarding 投影（官方 ui-settings-general 的派发面随该包被排除而缺失，本包补齐——
+ *   settings.onboarding 注册者挂载后自动工作：会话就绪且当前会话空白/无会话时按 order 展示第一步）。
+ * V2 待补：连接恢复指示器、「打开配置文件」action。
  *
  * 注：本文件为浏览器侧 bundle（含 window 全局），不参与 Node 编译。
  */
@@ -286,24 +287,50 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 外壳根：侧栏底部触发行 + 居中模态面板。
-     * V1 简化：不含连接指示器与 onboarding 投影（V2 补齐，渲染位已预留）。
+     * 外壳根：侧栏底部触发行 + 居中模态面板 + 引导步骤投影。
+     * V2 已补：settings.onboarding 投影（官方语义 1:1——会话就绪且当前会话缺失或为空白会话时，
+     * 按 order 取第一个未完成的步骤，经 settings.onboarding 槽位派发 `{stepId, complete, openSection}`，
+     * 并以 `{only: stepId}` 只渲染该步；步骤完成后本会话不再显示，退出引导态时清空完成集）。
+     * 仍未补：连接恢复指示器、「打开配置文件」action。
      */
     function SettingsRoot(props) {
       const { wide, renderSlot } = props
       const [open, setOpen] = React.useState(false)
       const [activeId, setActiveId] = React.useState(undefined)
+      const [completedOnboarding, setCompletedOnboarding] = React.useState(() => new Set())
       const triggerButton = React.useRef(null)
       const wasOpen = React.useRef(open)
       const close = React.useCallback(() => {
         setOpen(false)
         setActiveId(undefined)
       }, [])
+      const openSection = React.useCallback((id) => {
+        setActiveId(id)
+        setOpen(true)
+      }, [])
       React.useEffect(() => {
         if (wasOpen.current && !open) triggerButton.current?.focus()
         wasOpen.current = open
       }, [open])
       const rows = React.useSyncExternalStore(sectionsFace.subscribe, sectionsFace.getSnapshot)
+      const steps = React.useSyncExternalStore(onboardingFace.subscribe, onboardingFace.getSnapshot)
+      // 官方口径：`useSessions` 是 slots 标准 prop（renderer 作用域提供，官方 ui-settings-general 同款用法
+      // ——它自己也不硬 inject `sessions`）。缺席时退回自有 store 订阅（`ctx.get('sessions').list`）；
+      // 两者都没有则用空 store → 引导永不激活，设置面板其余部分照常（不因引导失败拖垮外壳）。
+      const sessionsHook = props.useSessions
+      const sessionState = sessionsHook !== undefined
+        ? sessionsHook((state) => state)
+        : React.useSyncExternalStore((sessionsList ?? EMPTY_STORE).subscribe, (sessionsList ?? EMPTY_STORE).getSnapshot)
+      // 引导态 = 会话已就绪且当前会话缺失或为空白会话（官方口径）。
+      const onboardingActive = sessionState.phase === 'ready' && (sessionState.current === undefined || sessionState.byId[sessionState.current]?.blank === true)
+      React.useEffect(() => {
+        if (onboardingActive) return
+        setCompletedOnboarding(new Set())
+      }, [onboardingActive])
+      const onboardingStep = onboardingActive ? steps.find((step) => !completedOnboarding.has(step.id)) : undefined
+      const completeOnboardingStep = React.useCallback((id) => {
+        setCompletedOnboarding((previous) => new Set([...previous, id]))
+      }, [])
       return h(React.Fragment, null,
         h('div', { className: `dss-triggerRow${wide ? '' : ' dss-railRow'}` },
           h('button', {
@@ -316,6 +343,13 @@ window.__ModuleLoader__.load({
           }, renderSlot('settings.trigger', { wide })),
         ),
         open && h(SettingsPanel, { rows, renderSlot, activeId, onSelect: setActiveId, onClose: close }),
+        onboardingStep === undefined
+          ? null
+          : renderSlot('settings.onboarding', {
+              stepId: onboardingStep.id,
+              complete: () => completeOnboardingStep(onboardingStep.id),
+              openSection,
+            }, { only: onboardingStep.id }),
       )
     }
 
@@ -325,6 +359,16 @@ window.__ModuleLoader__.load({
     let rowsVersion = -1
     let rowsRevision = -1
     let rowsCache = []
+
+    /** settings.onboarding 账本投影（id/order，按 order 升序）——引导步骤的开关面。 */
+    let onboardingFace = null
+    /** 降级用 session 清单 store（`ctx.get('sessions').list`；正常路径走 props.useSessions）。 */
+    let sessionsList = null
+
+    /** 空会话快照（sessions 服务缺席时的稳定兜底：引导永不激活）。 */
+    const EMPTY_SESSION_STATE = { phase: 'pending', current: undefined, byId: {} }
+    /** 空 store：subscribe 返回 no-op 退订，getSnapshot 返回稳定空态（uSES 要求引用稳定）。 */
+    const EMPTY_STORE = { subscribe: () => () => {}, getSnapshot: () => EMPTY_SESSION_STATE }
 
     /** 建立 settings.section 账本 + locale 修订的快照面（apply 时绑定 ctx）。 */
     function bindSectionsFace(ctx) {
@@ -357,12 +401,44 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /**
+     * 建立 settings.onboarding 账本投影（V2 补齐官方 ui-settings-general 的引导投影：
+     * 该投影原先在被排除的官方包里，故 forge 外壳此前声明了槽位却不派发，任何注册者都不显示）。
+     */
+    function bindOnboardingFace(ctx) {
+      let stepsVersion = -1
+      let stepsCache = []
+      onboardingFace = {
+        getSnapshot: () => {
+          const version = ctx.slots.getVersion('settings.onboarding')
+          if (version !== stepsVersion) {
+            stepsVersion = version
+            stepsCache = ctx.slots.entries('settings.onboarding')
+              .map((entry) => ({ id: entry.options.id ?? '', order: entry.options.order ?? 0 }))
+              .sort((a, b) => a.order - b.order)
+          }
+          return stepsCache
+        },
+        subscribe: (listener) => ctx.slots.subscribe('settings.onboarding', listener),
+      }
+    }
+
     // ── 注册（apply）──────────────────────────────────────────────
 
     exports.inject = ['slots', 'locale', 'themeIcon']
 
     exports.apply = (ctx) => {
       bindSectionsFace(ctx)
+      bindOnboardingFace(ctx)
+      // 引导态判定的降级数据源：sessions 服务由客户端运行时提供（**不硬 inject**——硬注入失败会让
+      // 整个设置外壳 pending，代价远大于「引导不显示」）。正常路径走 slots 标准 prop `useSessions`。
+      sessionsList = (() => {
+        try {
+          return ctx.get('sessions')?.list ?? null
+        } catch {
+          return null
+        }
+      })()
       // 主题图标内联渲染服务（无依赖自身可选；未提供时导航回退官方图标）
       themeIconSvc = ctx.get('themeIcon') ?? null
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-settings-shell: dictionaries')
