@@ -141,6 +141,8 @@ preload 侧在 `src/forge-shell/preload.ts` 白名单加一个 `videoStudio` 命
 
 **peer 依赖的硬要求**：外部插件的 `@deepseek-ai/*` 等 peer 必须与宿主解析到**同一个模块实例**（否则 `LlmAdapter` / `Service` 基类身份对不上）。做法是在插件目录内建指向宿主 `node_modules` 的 **junction**（Windows 无需管理员权限）；参考实现见 `plugins/dsh-llm-app-credentials/scripts/link-peers.cjs`。
 
+**最小参考实现（零依赖 / 零 peer / 单文件宿主插件）**：`plugins/dsh-llm-opencode-session/`（仓库 `lansi-ai/dsh-llm-opencode-session`，2026-09-16 起）——它只用 `node:crypto`，因此**不需要 peer junction**，`lib/` 产物入库，`cordis.patch.yml` 声明 `id`/`name`（安装器就是从这个 patch 读 roster id 的，见 `src/forge-host/plugin-install.ts` 的 `entryIdOf`）。要做「只改宿主行为、不碰上游代码」的小插件，直接抄这个包的骨架最省事。
+
 **验证**：`npm run verify:profile-plugins`（纯 Node，未装外部插件时判 SKIP 并 0 退出）。
 
 **注意**：外部插件在**进程启动时**发现，新装/卸载后需要重启应用；这与「图谱在页面加载时重建」不矛盾——后者只是对已发现包重算 bundle rev。

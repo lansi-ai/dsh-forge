@@ -1097,3 +1097,35 @@
   4. **网络层错误"信息少"不等于"链子断了"**：undici 把真因放在 `error.cause`，provider 原样重抛（`catch { close(); throw error }`）→ 只能看到 `TypeError: fetch failed`（**open**：按铁律不改官方代码，此 DX 缺口记为上游问题；将来自研 web 工具族时自带解包）。
 
 
+## 坑 73：**槽位「声明了」不等于「会派发」**——`settings.onboarding` 的派发者原在被排除的官方包里，任何引导步骤注册了都永远不显示
+
+- **现象**：把官方 `dsh-client-ui-settings-models` 纳入互斥排除、由自研件重新注册 `settings.onboarding` 两步（内测声明 + DeepSeek 官方密钥引导）时，注册面完全正常（账本有条目、无报错、无冲突），但**首启一条引导都不弹**。
+- **根因**：槽位是**两段契约**——`children` 声明（谁声明）+ `renderSlot` 派发（谁渲染）。forge 的 `@lansi-ai/dsh-forge-settings-shell` 接管 `sidebar.settings` 时**声明了** `'settings.onboarding': { kind: 'list', scope: 'root' }`，但派发实现留在**被排除的官方 `ui-settings-general` 里**（`renderSlot("settings.onboarding", {stepId, complete, openSection}, {only})` + 会话态判定 + 步骤完成集），自研外壳 V1 明确未做（文件头注释写的是「V2 待补」）。于是槽位长期「有声明、无派发、无报错」：官方 models 包的引导在 forge 里**从来就没显示过**，这次自有化只是第一次让人注意到。
+- **取证**：`settings.onboarding` 的注册者全仓库只有官方 models 包（`name:"settings.onboarding"` grep 命中 2 条，都在该包）；派发语句只在 `ui-settings-general/lib/client.js:266`；`forge-settings-shell-client.js` 内 `onboarding` 只出现在注释与 children 声明里，零 `renderSlot` 调用。
+- **解法**：外壳补齐官方投影语义（1:1）：`settings.onboarding` 账本投影（id/order 升序）+ 会话态判定（`sessions.list` 快照：`phase==='ready'` 且 `current===undefined || byId[current].blank===true`）+ 本会话完成集（退出引导态即清空）+ `renderSlot('settings.onboarding', {stepId, complete, openSection}, {only: stepId})`；`sessions` 服务缺席时用空 store 兜底（引导永不激活，设置面板其余部分照常）。自研件则按官方 order 重新注册两步（`welcome-notice` -100 / `deepseek-official` 0，写 `ui-onboarding.welcomeNoticeVersion`）。
+- **复盘要点**：
+  1. **排除官方包前，先把「该包提供的派发/服务面」逐条列清**——与坑 15/62（服务面连坐）同源，只是这次连坐的是**渲染派发**而非 ctx 服务：**声明与派发分居两包**，只查声明会漏判。
+  2. **「注册成功、无报错」是弱证据**：`slots.register` 只校验声明存在，不校验有人渲染。判定「某槽位真的在工作」的唯一硬证据是**runtime 里有人调 `renderSlot`**（grep 命中，或实机可见）。
+  3. **顺带修掉的既有缺口要写进台账**：本次同时补齐了外壳 V2 缺的 onboarding 投影；官方 models 包此前在 forge 里静默失能一事，属于**长期存在的行为差异**，不是本次引入的回归。
+
+
+## 坑 74：opencode Go 恒 `400 MissingSessionID`——**网关要的自定义头，官方设置页不暴露**（而配置层其实早就支持）
+
+- **现象**：把 opencode Go（`https://opencode.ai/zen/go`）配成模型路由后，每次对话都被上游顶回：
+  `400: {"type":"MissingSessionID","message":"Error from provider (Console Go): Request is missing x-opencode-session and cannot be routed efficiently. …"}`。
+- **根因**（两段事实叠加）：
+  1. **网关侧**：opencode Go 在文档「Where can I use it?」里要求客户端①发普通编码 agent 流量、②用自有 UA、**③每个请求带稳定会话 ID（`x-opencode-session`）**以便路由与提示缓存；同一张表把 **DeepSeek Harness 列为「部分模型路径带会话信息、其余路径缺失」**（discussion #5495）。
+  2. **DSH 侧**：原生会话头只有官方 DeepSeek 适配器在发——`dsh-llm-deepseek` 发 `x-deepseek-harness-session-id: options.sessionId`（`lib/index.js:1665-1667`）；**pi-ai 适配器不发**。而 pi-ai 的 profile **本来就支持 `headers` 字典**（`llm-pi-ai` 的 `headers: z.dict(z.string())`，`lib/index.js:994`；校验 `assertValidHeaders` `:1036`；三条发请求路径都带上——`:1873` openai 系、`:2291` anthropic 系、`:2635` 模型探测），**官方设置页（ui-settings-models）却只暴露 API Key/baseURL/模型目录，没有请求头**。于是「网关要求自定义头」在官方 UI 里无路可走：只能手改 `settings.yaml`。
+- **取证**：错误原文来自上游 body（非 DSH 文案，全仓库 grep `MissingSessionID`/`Console Go` 零命中于 `@deepseek-ai`）；`dsh-llm-pi-ai` 的 `headers` 字段与传递路径见上列行号；`dsh-llm-deepseek` 的会话头发送点见 `:1665`。
+- **解法**（**不动官方代码**，两层一起上，2026-09-15）：
+  1. **配置层入口**（自有化设置插件）：`@lansi-ai/dsh-forge-settings-models` 的 provider 编辑器加「请求头」区——按 `llm-pi-ai` 家族（并用 schema `nodeAtPath` 兜底探测）渲染键值行编辑器，写 `providers.<route>.headers`（最小 `settings.mutate` pathOps，空表落成 unset）；命中 opencode 网关（路由 id 以 `opencode` 开头，或 baseURL host 属 `opencode.ai`）且未配会话头时给一行说明。校验口径对齐上游（名称走 RFC 7230 token、值禁 CR/LF/控制字符、重名大小写不敏感），非法时闸住提交。**这一层是通用能力**：任何网关要的自定义头都能配。
+  2. **逐会话自动化**（**独立插件包** `dsh-llm-opencode-session`，仓库 `lansi-ai/dsh-llm-opencode-session`，工作区 `E:\Projects\DSH\plugins\dsh-llm-opencode-session\`，经 `--install-plugin github:lansi-ai/dsh-llm-opencode-session[@ref]` 装进 `$DSH_HOME/profiles/dsh-forge/cordis.patch.yml`，由 profile 装载层装配并把裸名改写为**绝对入口路径**；导出 `name`/`inject`/`apply`，与外部插件同形态）：opencode 要的是**每段对话一个稳定 ID**（不是每请求换值），而静态配置表达不了 → `apply` 经 `ctx.effect` 安装出口补丁（卸载即还原）：只对 `opencode.ai` 域生效；请求已带 `x-opencode-session`（用户静态配置或上游将来自己发）**一律不覆盖 → 上游修好即自动 no-op**；会话 ID = `dsh-` + `sha1(model + 首条用户消息)` 前 32 位（同对话稳定、不同对话不同）；无正文（如 `GET /v1/models`）用进程固定 id；只**克隆**读请求体、失败一律原样发送；`apply` 内 try/catch（宿主对未激活条目会回滚整棵树，不该因「不缺头」让应用起不来）。出口选择依据：pi-ai 三种 wire 协议都走 `options?.fetch ?? globalThis.fetch`，而 `dsh-llm-pi-ai` 不注入自定义 fetch；openai/anthropic 两 SDK 的 `getDefaultFetch()` 是**调用时**读全局 `fetch`，故包装全局即可全覆盖。**该能力不进主包**（可选能力走外部插件通路，D-28）：主包内没有副本，删 profile 那一行即卸载。
+- **复盘要点**：
+  1. **「官方设置页没有这个开关」≠「配置层不支持」**：先读上游 schema（本例 `headers` 一直在），再决定是自有化补 UI 还是真需要动传输层——前者零上游耦合、可回滚；后者才是这次的逐会话补丁（因为静态头**在语义上就做不到**逐会话）。
+  2. **先问「上游要的是哪个粒度」再动手**：opencode 的口径是 **per conversation / stable**——每请求换值反而毁掉路由与提示缓存。静态配置能消 400，但把所有对话并成一个会话；要语义正确只能拿到**逐请求**的会话身份，而它只存在于请求里（DSH 的 `options.sessionId` 到 pi-ai 就断了），所以落在 `llm/stream` 之后的传输层。
+  3. **补丁要自带退役条件**：本补丁「已带该头就不覆盖」，因此上游 pi-ai 一旦转发会话信息（issue #4847/#4680/#9290），它自动退化为 no-op，可随版本评估删除。
+  4. **包装全局 fetch 的纪律**：域白名单 + 只读克隆（不消费原体）+ 任何失败回退原请求 + 退出前还原 + 单测覆盖（含「非目标域零改动」「请求体不被吞」「下游抛错原样冒泡」）。
+  5. **同类风险通用**：任何第三方网关的「必须带某头/某 UA」诉求都能用这两条通路解决；UA 一项 DSH 已满足（`dsh-llm` 的 `attributionHeaders()` 发 `deepseek-harness/<version> (+repo)`）。
+
+
+

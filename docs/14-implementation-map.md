@@ -44,7 +44,7 @@
 | `src/forge-shell/` | Electron 外壳：入口、协议、参数、崩溃自愈 | `main.ts` / `preload.ts` / `dsh-ui-protocol.ts` / `argv.ts` / `relaunch.ts` / `web/*` |
 | `src/forge-host/` | Host 装配、IPC 桥、载波、桌面能力模块 | `boot.ts` / `bridge.ts` / `boot-graph.ts` / `manifest.ts` / `carrier-relay.ts` / `window-manager.ts` / `forge-*.ts` / `compat-webserver.ts` / `dsh-protocol.ts` / `session-rewarm.ts` / `theme-sync.ts` / `cordis-inventory.ts` / `log.ts` |
 | `src/types/` | 唯一类型源头：zod Schema + channel 常量 + 错误码 | `channels.ts` / `contract.ts` / `desktop.ts` / `window.ts` / `errors.ts` / `boot.ts` |
-| `src/forge-compat/`、`src/forge-plugins/` | 预留目录（当前能力以项目内模块形态在 forge-host） | — |
+| `src/forge-compat/`、`src/forge-plugins/` | 预留目录（当前能力以项目内模块形态在 forge-host；**外部/独立插件不放这里**——各自是 `E:\Projects\DSH\plugins\` 下的独立仓库） | — |
 | `docs/` | 设计文档、ADR、坑档、dogfood 台账 | `upstream-contracts.md` / `pitfalls.md` / `dogfood-issues.md` |
 | `scripts/` | 构建/打包辅助 | `copy-web.cjs` / `make-sums.cjs` 等 |
 
@@ -81,6 +81,7 @@ userData 重定向(dev) → parseArgv(--serve/--hidden) → 注册 dsh-ui scheme
 - `bootDesktopHost()` 调官方 `@deepseek-ai/dsh-app-boot` 的 `boot('dsh-forge', cordis.yml, patches, prepare, bareModuleBaseUrl)`。
 - 根配置 = `.runtime/cordis.yml`（内容 `[]`，仅作 Include 根锚点），全部配置由 **overlay patches** 覆盖：
   - **§1 insert**：全量核心 host 服务（llm/session/agent/sandbox/fs/tools/skill/subagent/workflow…约 70 条），含 `api-gateway`（ctx.apiProxy，下行事件流来源）与第三方 `opencode-usage`。
+  - **不在 roster 的可选能力**：opencode 逐会话会话头（坑 74）走**独立插件包** `dsh-llm-opencode-session`（仓库 `lansi-ai/dsh-llm-opencode-session`），经 `--install-plugin` 落 `$DSH_HOME/profiles/dsh-forge/cordis.patch.yml` 后由 profile 装载层（`profile-plugins.ts` 的 `rewriteInsertNames`）改写为绝对入口路径 —— 可选能力不进主包，删那一行即卸载。
   - **§2 覆盖**：`system-prompt` 桌面 persona。
   - **§3 禁用**：`webserver/web-runtime/web-startup/connection/client-runtime` 等 Web 传输层（零端口红线）。`cordis-host-runner` 自 2026-09-10 起**改为 §1 insert 启用**（创造模式 · dogfood #23）。
   - **§4 insert**：`storage/storage-json/storage-domain/agent-presets`（坑 16：必须经 insert 数组进树，非 insert 补丁对空根配置是静默 no-op）。
@@ -200,6 +201,7 @@ scheme 特权：standard/secure/supportFetchAPI/corsEnabled（注册须在 whenR
 浏览器 bundle（不参与 Node 编译），经 `__DSH_BOOT__` 图谱条目激活：
 
 - `forge-settings-client.js`：官方 slots 机制注册 `settings.section`（id=desktop, order=10）——托盘/通知/快捷键/面板位置 Toggle + AutoStartSetting（autostart bridge）+ 快捷键提示；读写经官方 settings（`settings.describe/mutate` RPC）。
+- `forge-settings-models-client.js`（2026-09-15 M6-P6 模型设置自有化）：顶替官方 `dsh-client-ui-settings-models`（已入 `CLIENT_EXCLUDE_IDS`）——接管 `settings.section`(id=models, order=10) + 两步 `settings.onboarding` + 声明/派发 `settings.models.provider-card`(keyed) 与 `settings.models.footer`(list)；数据面五调用（`llm/listProviders`+`listConfigurableProviders`、`settings` 镜像、`credentials/describe|set|unset`、`llm/discoverModels`、`settings/mutate`）零新增；另补官方页缺失的 **profile `headers` 请求头编辑**（含 opencode 网关的 `x-opencode-session` 一键生成，坑 74）。**配套**：`forge-settings-shell-client.js` 补齐 `settings.onboarding` 投影（原派发者在被排除的官方 `ui-settings-general` 内，见坑 73）。
 - `forge-panel-client.js`：`sidebar.footer.action` slot 悬浮面板 + `onDesktopEvent` 响应 open/close-panel。
 - `forge-audit-viewer-client.js`：审计 Tab UI（query/listActions bridge）。
 - `forge-cmdpalette-client.js`：**禁用壳**（factory 返回空插件，Ctrl+K 不注册；仅保留 quick-ask 下行 → focusComposer 聚焦官方输入框并预填）。

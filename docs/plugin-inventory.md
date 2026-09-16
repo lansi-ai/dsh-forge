@@ -2,7 +2,7 @@
 
 > 真源：`src/forge-host/boot.ts`（Host 树 §1+§4 insert）与 `src/forge-host/boot-graph.ts`（Client 图谱 desktopDecls + CLIENT_EXCLUDE_IDS）。本文为派生视图，架构变更时同步更新。
 > 命名规范（D-19）：桌面插件统一 `@lansi-ai/dsh-*`（蓝思 scope + dsh 生态前缀）。
-> 状态更新至：**`0.1.2-alpha.4` 基线（2026-09-02 M4-d4）· M6-P2 首件自有化完成**。
+> 状态更新至：**`0.1.2-alpha.4` 基线（2026-09-02 M4-d4）· M6-P6 首件「模型」section 自有化代码完成（2026-09-15，待实机点验）**。
 > HTML 可视化版：`docs/architecture-plugins.html`（尚未同步 0.1.2 后状态，以本文为准）。
 
 图例：✅ 已装载 · ⛔ 已禁用 · 🚫 被排除（不入图谱）· 🟠 预载注册（不激活）· 🔁 已自有化（官方件被桌面件替换）
@@ -23,7 +23,7 @@
 | **P3 侧栏自研** | 侧栏壳（✅ 实机通过）+ 会话浏览区（`ui-workspace` 替换，W1-W5） | 🔄 壳 ✅；**W1 五接管面 + picker 承重件 ✅；W2 tree 派生层 ✅；W3 Rows 行组件 + 视图选项 ✅；W4 Browser 内容搜索 ✅**（2026-09-08，派生/行/搜索纯函数单测 16 项全过，**待实机点验**）→ W5 实机对照点验收口 |
 | **P4 对话主区** | `ui-conversation` + `ui-renderer` + input/attachment/reference | ⬜ 未开始（最大单件） |
 | **P5 过程可视化** | tool/subagent/plan/goal/jobs/skill/workflow-run/trajectory | ⬜ 未开始 |
-| **P6 设置与底座** | settings 6 section + theme/locale/model-selection/permission-presets | ⬜ 未开始 |
+| **P6 设置与底座** | settings 6 section + theme/locale/model-selection/permission-presets | 🔄 **首件「模型」section ✅（2026-09-15，含两步 onboarding；待实机点验）**；插件列表 ✅（2026-09-11 实机通过）；余下 section 与底座未开始 |
 
 ### 已自有化明细
 
@@ -34,9 +34,13 @@
 | （无官方对应，M3-c4） | `@lansi-ai/dsh-forge-titlebar` | 布局 root 槽位 `titlebar` 行（拖拽区 + 窗控三钮 + 品牌区） | — | ✅ 实机通过 |
 | `dsh-client-ui-sidebar` | `@lansi-ai/dsh-forge-sidebar` | sidebar 槽位（fold 状态机 + 新会话 + 5 子槽位声明）；ui-workspace/ui-settings 经子槽位无改动继续工作 | — | ✅ 实机通过（2026-09-01） |
 | `dsh-session-log-export`（client 半） | `@lansi-ai/dsh-forge-session-export` | `conversation.session.header.utilities` 槽位（导出胶囊 + 结果弹层，文案修正桌面语义） | **保留复用**（boot.ts `session-log-download` 行：/export 命令 + `/api/session.export` ZIP 流式路由） | ✅ 实机通过（2026-09-02，M6-P2 首件） |
+| `dsh-client-ui-settings-models` | `@lansi-ai/dsh-forge-settings-models` | **接管面**：① `settings.section` id=`models` order=10（官方信息架构 1:1：provider 目录行 + 单卡编辑器 + 添加提供方 + 自定义路由 + 删除确认 + 模型探测选择器 + 只读/冲突态）；② 两个子槽位声明与 dispatch（`settings.models.provider-card` keyed=settingsNs / `settings.models.footer` list）；③ 两步 `settings.onboarding`（welcome-notice -100 / deepseek-official 0，含 `ui-onboarding` 声明确认）；④ 字典 NS 沿用官方 `settings.models`（官方 87 键逐字对齐 + 自研增补请求头/opencode 相关键）。**官网缺口补齐**：⑤ 编辑器加「请求头」区（官方页不暴露 profile 的 `headers` 字典）——写 `providers.<route>.headers`，并对 opencode 网关给 `x-opencode-session` 一键生成（官方 UI 无法配置该头 → opencode Go 恒 400 MissingSessionID，见坑 74）。数据面零新增（五 Remote 调用 + `settingsScope`/`settingsSchema` 领域服务） | —（host 半空 apply，无连坐） | 🔄 代码完成（2026-09-15）：typecheck/lint 全绿 + `settings-models.test.cjs` 18 项 + 既有 50 项全过 + dist 图谱实测（entries=64，官方包确认排除、两个子槽位与两步引导在册）；**待实机点验** |
+| （无官方对应，**独立插件包** · 坑 74） | `dsh-llm-opencode-session`（**已发布**：`github.com/lansi-ai/dsh-llm-opencode-session` @ `v0.1.0`（tag）/ `e54cbbd`（root commit，2026-09-16）；工作区 `E:\Projects\DSH\plugins\dsh-llm-opencode-session\`，与 `dsh-llm-app-credentials` 同级） | **opencode 逐会话头插件**：`apply` 经 `ctx.effect` 包装 `globalThis.fetch`，只对 `opencode.ai` 域注入 `x-opencode-session`（= `dsh-` + `sha1(model+首条用户消息)` 前 32 位：同对话稳定、不同对话不同）；已带该头即不覆盖（上游修好自动 no-op）；只克隆读请求体、失败原样放行；卸载即还原。**零运行时依赖、零 peer**（只用 `node:crypto`），产物 `lib/` 入库（`--install-plugin` 不跑构建） | 插件本体（宿主侧，随包分发；**主包不再内置副本**） | ✅ 已发布并**本机已安装**（2026-09-16）：`--install-plugin github:lansi-ai/dsh-llm-opencode-session@v0.1.0` 落 `$DSH_HOME/profiles/node_modules` + 装载行 `id: llm-opencode-session`；入口契约实测 `name/inject/apply` 齐备；包内测试 10 项全绿；**待实机点验**（发一条消息看是否还有 400） |
 | `dsh-client-ui-workspace`（client 半） | `@lansi-ai/dsh-forge-workspaces` | **五项接管面**（详见 `upstream-contracts.md` §7.1 末行）：① provide `uiWorkspace` 服务（六方法，**排除即连坐**——侧栏壳/ui-conversation/native picker/agent-preset 四者硬 inject）；② `provideRoot(hooks.workspaces)`；③ `locale.register('workspace')` 63 键；④ 双注册 `sidebar.workspaces` + `conversation.hero.workspace`（各带 directoryFlow 子洞）；⑤ 十三项动作注入面 | — （该包 host 半 `lib/index.js` 本就是空 apply，boot.ts 未插该行，host 侧无连坐） | 🔄 **W1 + picker 承重件 ✅；W2 tree 派生层 ✅**（2026-09-08）：五接管面全通；选/加工作区路径已实现（**原「空壳」写法曾锁死全应用，见坑 35**）；tree 派生纯函数（deriveGroups/deriveFlat/deriveSearchResults + indexSubagentDescendants 血缘）已内联进 bundle 并经 `node:test` 单测守护（8 项断言全过）；行组件仍后置（W3）；静态门禁 + 图谱实测 + bundle 冒烟 40 项 + pickflow 行为断言 21 项 + 字典逐字 diff 均通过，**待实机点验** |
 
 > **双装配线先例**（session-log-export，自有化方法论第 18 条的实践）：官方双面包的 client 半被排除替换时，host 半经 boot.ts 照常装载提供数据面——自有件零重复实现。
+>
+> **模型设置**（`dsh-client-ui-settings-models` → `@lansi-ai/dsh-forge-settings-models`，2026-09-15 P6 首件）：该包 host 半是空 apply（`lib/index.js`），boot.ts 未插该行，**host 侧无连坐**；数据面五调用全复用（`llm/listProviders` ∪ `llm/listConfigurableProviders`、`settings` 共享镜像、`credentials/describe|set|unset`、`llm/discoverModels`、`settings/mutate`），零新增。接管面 = `settings.section`（id=`models`, order=10）+ 两步 `settings.onboarding`（`welcome-notice` / `deepseek-official`）+ 两个子槽位声明（`settings.models.provider-card` keyed / `settings.models.footer` list，第三方 provider 扩展位零改动）。**同时补齐外壳的 onboarding 投影**（官方派发者原在被排除的 `ui-settings-general` 内，见坑 73）。
 
 ### 互斥排除清单（CLIENT_EXCLUDE_IDS）
 
@@ -49,6 +53,7 @@
 | `dsh-client-hmr` | dev SSE `/plugins/events` 桌面不存在，轮询必 404（终端静音） |
 | `dsh-client-ui-settings-general` | 设置外壳自研（`@lansi-ai/dsh-forge-settings-shell` 接管 `sidebar.settings` / `settings.trigger` 等，双激活抛 "already has a registration"）。**2026-09-07 补登记**：boot-graph 早已排除但本清单漏记 |
 | `dsh-client-ui-workspace` | M6-P3 工作区浏览区自研（`@lansi-ai/dsh-forge-workspaces` 顶替，2026-09-07 W1）。⚠ **非纯 UI 排除**：该包还对外提供 `uiWorkspace` ctx 服务 + `useWorkspaces` 全局贡献 + `workspace` 字典，排除前必须逐项接管（见 §〇 已自有化明细与 `upstream-contracts.md` §2/§7.1） |
+| `dsh-client-ui-settings-models` | M6-P6 模型设置自研（`@lansi-ai/dsh-forge-settings-models` 顶替，2026-09-15）。**纯 UI 排除**：host 半为空 apply；无对外 ctx 服务；两个子槽位与 locale NS `settings.models` 在自有件内原样重声明（`settings.models.*` 全仓库零外部注册者，已核）。⚠ 其 **onboarding 两步随包消失** → 必须由自有件重新注册，且外壳必须真的派发（坑 73） |
 
 > **2026-09-10 起 `dsh-cordis-client-runner` + `dsh-client-ui-cordis` 不再排除**（创造模式 · dogfood #23）：宿主半 `cordis-host-runner` 已 insert（`dynamicCordisRunner`/`cordisInspect`），客户端两半同批回填装载，面板入口注册进自绘侧栏新声明的 `sidebar.footer.action` 槽位（`list`/`root`，对齐官方 ui-sidebar）。
 
@@ -56,7 +61,11 @@
 
 - **P2**：`dsh-forge-brand`（sidebar.brand.mark/name 洞）、会话 header 重排评估（TRAE 式会话名 + 按钮组）
 - **P3**：`dsh-forge-workspaces`（全量复刻 ui-workspace）——W1 五接管面 ✅ + **picker 承重件 ✅**（2026-09-08；坑 35：原「空壳」锁死全应用，已把选/加工作区提前到首批）→ **W2 tree 派生层 ✅**（deriveGroups/deriveFlat/deriveSearchResults + indexSubagentDescendants 血缘，内联进 bundle，export.derive 钩子 + node:test 单测 8 项，2026-09-08）→ **W3 Rows 行组件 + 视图选项 ✅**（组行/会话行 + 状态点优先级 琥珀>蓝>绿 + Manual 拖拽持久排序 + flat 单列表 + 分组/排序下拉，单测 8 项追加，2026-09-08）→ **W4 Browser 增强 ✅**（内容搜索：wide 内联搜索槽 + narrow 搜索入口展开侧栏 + Host `session.search` 防抖 250ms + sanitizeSearchQuery 线缆护栏 + 本地/内容命中合并派生，单测追加 sanitizeSearchQuery，全局计 16 项通过，2026-09-08；目录流收养已随 W1 通；分组折叠/视图选项已随 W3）→ **W5** 实机对照点验收口
-- **P4-P6**：见上表（启动前需逐件摸底登记）
+- **P6 设置与底座**：
+  - ✅ 插件列表（`settings.plugins.tab`，2026-09-11 实机通过）
+  - 🔄 **模型 section 自有化**（`@lansi-ai/dsh-forge-settings-models`，2026-09-15 代码完成）——官方 `dsh-client-ui-settings-models` 整体排除；**剩余对照点（待实机点验）**：① provider 行/密钥点/编辑删除；② 编辑器（deepseek 目录 vs pi-ai 列表、`keyEnvLocked`、只读/冲突态）；③ 自定义路由创建 + 模型探测选择器；④ 首次引导两步（内测声明 → DeepSeek 密钥，`ui-onboarding` 落盘）；⑤ 模型页导航图标随主题切换（`settings-nav-models.svg` 已存在）
+  - ⬜ 余下 section 与底座：`ui-settings` 其余 section + `ui-theme`/`ui-locale`/`ui-model-selection`/`ui-permission-presets`
+- **P4-P5**：见上表（启动前需逐件摸底登记）
 
 ---
 
