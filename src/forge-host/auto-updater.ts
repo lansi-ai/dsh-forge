@@ -101,10 +101,16 @@ const TAG = '[dsh-updater]'
 /**
  * 渠道 → electron-updater `channel`。
  * - `stable`: null → 描述符走默认 `latest.yml`。
- * - `rc`: 'rc' → 用于**按 tag 的预发布标识挑版本**（只认 `-rc.N`）；描述符先请求 `rc.yml`，
- *   404 后 electron-updater 会**自动回退到 `latest.yml`**（`GitHubProvider.getLatestVersion`）。
- *   故 CI 侧只需保证 `latest.yml` 随包上传，**不需要**额外产出 `rc.yml`／`latest-rc.yml`。
- * 注：`allowPrerelease` 由 electron-updater 依当前版本自动推导（版本带预发布标识即为 true）。
+ * - `rc`: 'rc' → 描述符 `rc.yml`（`Provider.getCustomChannelName`，win 无平台后缀）。
+ *
+ * **实测语义（坑 75，2026-09-16 按 `electron-updater` 源码逐条核对）**：
+ * 1. `allowPrerelease` 由当前版本自动推导（版本含预发布段才为 true）——**正式版装机永远是 false**，
+ *    于是它只走 `/releases/latest`（跳过所有 pre-release），**不可能**升到预发布版；
+ * 2. `allowPrerelease=true` 时按 `channel` 匹配 **tag 的预发布段**（`GitHubProvider.js:83` 的
+ *    `hrefChannel === currentChannel`）：`rc` 渠道**只认 `-rc.N` 标签**，`-alpha.N` 选不中；
+ * 3. 描述符 404 的**回退只发生在 `allowPrerelease=true`**（同文件 `:137-144` 的 catch 分支）：
+ *    false 时直接抛 `Cannot find rc.yml …`（实机报错原文）。故 `rc.yml` 必须随包上传，
+ *    不能依赖回退 —— 两条发布链均由 `scripts/align-release-assets.cjs` 生成 `latest.yml` 的副本。
  */
 const CHANNEL_FEED: Record<Exclude<UpdaterChannel, 'off'>, string | null> = {
   stable: null,

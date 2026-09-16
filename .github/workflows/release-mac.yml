@@ -84,9 +84,9 @@ jobs:
           shasum -a 256 *.dmg *.zip > SHA256SUMS-mac
           cat SHA256SUMS-mac
 
-      - name: Upload checksums to release
+      - name: Upload checksums and channel descriptor to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="v$(node -p "require('./package.json').version")"
-          gh release upload "$TAG" release/SHA256SUMS-mac --clobber --repo "$GITHUB_REPOSITORY"
+          gh release upload "$TAG" release/SHA256SUMS-mac release/rc-mac.yml --clobber --repo "$GITHUB_REPOSITORY"

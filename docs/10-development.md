@@ -110,4 +110,6 @@ npm run release -- 0.1.1-alpha.6 --local --push
 
 - 推送 tag 后由 `.github/workflows/release-win.yml` / `release-mac.yml` 在云端构建双平台产物并上传至 `v<version>` Release（版本号含预发布段时自动打 pre-release）
 - 两个 workflow 上传前均调用 `scripts/align-release-assets.cjs`，把产物名对齐 `latest.yml` 的 `path`（坑 41 根治，防自动更新 404）
-- 发布后核验：匿名 `HEAD https://github.com/lansi-ai/dsh-forge/releases/download/<tag>/<latest.yml 的 path>` 应返回 200（**勿带 Authorization**，公开端点带 token 反被 401）
+- **渠道描述符**：同一脚本还会生成 `latest.yml → rc.yml`、`latest-mac.yml → rc-mac.yml` 的逐字节副本，两条链的上传清单都必须带上（应用内「预发布渠道」固定请求 `rc.yml`；缺它时正式版装机检查更新会直接抛 404，回退 `latest.yml` 只在 `allowPrerelease=true` 时成立 —— 详见 [坑 75](pitfalls.md)）
+- **发布命名约束**：`rc` 渠道按 **tag 的预发布段**匹配版本（`electron-updater` 的 `hrefChannel === currentChannel`），故预发布必须用 `-rc.N`；用 `-alpha.N` 的版本对应用内更新**不可见**。另外：**正式版装机无法升到预发布版**（`allowPrerelease` 由当前版本推导），跨过去要手动装一次预发布包
+- 发布后核验：匿名 `HEAD https://github.com/lansi-ai/dsh-forge/releases/download/<tag>/<latest.yml 的 path>` 应返回 200（**勿带 Authorization**，公开端点带 token 反被 401）；预发布版本额外核验 `rc.yml` 同样 200

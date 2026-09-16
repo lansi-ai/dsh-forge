@@ -1128,4 +1128,28 @@
   5. **同类风险通用**：任何第三方网关的「必须带某头/某 UA」诉求都能用这两条通路解决；UA 一项 DSH 已满足（`dsh-llm` 的 `attributionHeaders()` 发 `deepseek-harness/<version> (+repo)`）。
 
 
+## 坑 75：预发布更新链「三件套」必须一致——**渠道名 / 描述符文件名 / tag 预发布段**；`rc.yml` 从未随包上传
+
+- **现象**（用户实机，2026-09-16）：已装 **0.1.1 正式版**，点「检查更新」——**正式渠道无更新**（预期：`v0.1.2-alpha.1` 是 pre-release），**预发布渠道直接报错**：
+  `Cannot find rc.yml in the latest release artifacts (https://github.com/lansi-ai/dsh-forge/releases/download/v0.1.1/rc.yml): HttpError: 404`。
+- **根因**（按 `electron-updater` 源码逐条核对，四件事叠在一起）：
+  1. **`allowPrerelease` 由「当前安装的版本」推导**：正式版装机恒为 `false` → provider 走 `/releases/latest`（GitHub 上游天然跳过 pre-release）→ **正式版装机不可能升到预发布版**，且它根本不会去挑预发布 tag（`providers/GitHubProvider.js:51` 的 `if (this.updater.allowPrerelease)` 分支被跳过）。所以「正式渠道没更新」不是故障。
+  2. **`rc` 渠道要的文件名是 `rc.yml`**：`Provider.getCustomChannelName(channel) = ${channel}${平台后缀}`（`:44-46`；Windows **无**平台后缀、macOS 为 `-mac` → `rc.yml` / `rc-mac.yml`）。而**两条发布链都没有产出它**——`release-win.yml` 的上传清单只有 `latest.yml`，`--publish-local` 的 `UPLOAD_PATTERNS` 同样只有 `latest.yml`。
+  3. **404 的回退带前提**：`GitHubProvider.js:137-144` 的 `catch { if (this.updater.allowPrerelease) rawData = await fetchData(defaultChannel); else throw e }` —— 只有 `allowPrerelease === true`（当前装的就是预发布版）才会回退 `latest.yml`；正式版装机直接抛错，即上面的原文。**我们 `auto-updater.ts` 旧注释称「404 后会自动回退」，漏了这个前提**（本次已修正为逐条实测语义）。
+  4. **tag 的预发布段必须等于渠道名**：`:83` 的 `isNextPreRelease = hrefChannel === currentChannel` → `rc` 渠道**只认 `-rc.N`**；`-alpha.1` 段是 `alpha`，`shouldFetchVersion` 对 `rc` 也为假 → **选不中**。历史上 `0.1.1-alpha.N` 能自动升级，是因为当时从**预发布装机**起步且 `channel` 为空 → `currentChannel` 取了当前版本的段 `alpha` 走 Atom 首条路径（`:52-58`）；一旦渠道显式设为 `rc`，alpha 段就再也匹配不上。
+- **取证**：`node_modules/electron-updater/out/providers/GitHubProvider.js:51/83/116-145`、`out/providers/Provider.js:41-46`；本地 `src/forge-host/auto-updater.ts` 的渠道映射（`rc → 'rc'`）与旧注释；实机报错原文（URL 指向 `v0.1.1/rc.yml` 正是「`/releases/latest` = v0.1.1 且无 rc.yml」的指纹）。
+- **解法**（两条链一起补，2026-09-16）：
+  1. `scripts/align-release-assets.cjs` 统一生成**渠道描述符副本**：`latest.yml → rc.yml`、`latest-mac.yml → rc-mac.yml`（逐字节复制，YAML schema 相同仅文件名不同）——该脚本是本地直发与 CI 的公共步骤，一处补齐两条链；
+  2. `release-win.yml` 上传清单补 `release/rc.yml`；`release-mac.yml` 在 **align 之后**的那次上传里补 `release/rc-mac.yml`（mac workflow 的上传发生在 align 之前，顺序不能抄错）；
+  3. `scripts/release.cjs` 的 `UPLOAD_PATTERNS` 收 `rc(?:-mac)?\.yml`，并新增闸门：win 本地发布缺 `rc.yml` 即中止（与既有 `latest.yml`/`SHA256SUMS` 闸门同级）；
+  4. 修正 `auto-updater.ts` 的渠道注释为实测语义（allowPrerelease 前提、tag 段匹配、`rc.yml` 必需）；
+  5. 发布命名约束：**预发布用 `-rc.N`**（对齐 `rc` 渠道）；若将来真要 `alpha` 段，必须同时给应用加 `alpha` 渠道映射，否则该版本对应用内更新不可见；
+  6. 给**已发布**的 `v0.1.1` 补一个 `rc.yml`（内容即其 `latest.yml`）→ 现存正式版装机的 rc 渠道从「404 报错」变成「无更新」（语义正确：正式版本来就没有可升的预发布）。
+- **复盘要点**：
+  1. **渠道是三件套**：`设置里的渠道名` ↔ `描述符文件名（含平台后缀）` ↔ `tag 的预发布段`，三者必须一致；任何一环错位，表现都是「上游 404 / 看不到更新」，而不是本地报错。
+  2. **「客户端说找不到文件」先读客户端源码，不要读自己的注释**：本次错误注释在仓库里存了数周，把「有条件回退」写成了「自动回退」。
+  3. **发布链的产物清单要含渠道描述符**：只传 `latest.yml` 的链在 stable 渠道永远正常、在其它渠道永远坏 —— 这种「只有换渠道才暴露」的缺陷必须在链条层修，而不是每次发版手工补。
+  4. **正式版装机 ↔ 预发布渠道是设计上的死路**：要跨过去只能手动装一次预发布包（或发一个正式版）。把这点写进发布说明，省掉用户重复点「检查更新」。
+
+
 

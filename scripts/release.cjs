@@ -63,7 +63,7 @@ const REPO = (() => {
  * 刻意排除 `latest-mac.yml`：本地产不出 mac 包，若 release/ 里残留上一批 mac 描述符，
  * 传上去会让 mac 客户端拿到指向不存在资产的描述符。
  */
-const UPLOAD_PATTERNS = [/setup\.exe$/, /portable\.exe$/, /\.blockmap$/, /^latest\.yml$/, /^SHA256SUMS$/];
+const UPLOAD_PATTERNS = [/setup\.exe$/, /portable\.exe$/, /\.blockmap$/, /^latest\.yml$/, /^rc(?:-mac)?\.yml$/, /^SHA256SUMS$/];
 
 const argv = process.argv.slice(2);
 const flags = new Set(argv.filter((arg) => arg.startsWith('--')));
@@ -452,6 +452,11 @@ function artifactsToUpload() {
   }
   if (!files.some((file) => file.endsWith('SHA256SUMS'))) {
     die('release/SHA256SUMS 缺失——M4-e 门禁要求校验和可外部验证');
+  }
+  // 坑 75：应用内「预发布渠道」固定请求 rc.yml；缺它时正式版装机检查更新会直接抛
+  // 「Cannot find rc.yml … 404」（回退 latest.yml 只在 allowPrerelease=true 时成立）。
+  if (process.platform === 'win32' && !files.some((file) => file.endsWith(`${path.sep}rc.yml`))) {
+    die('release/rc.yml 缺失——预发布渠道描述符必须随包上传（由 align-release-assets.cjs 生成副本，坑 75）');
   }
   return files;
 }

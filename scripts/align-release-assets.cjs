@@ -13,6 +13,13 @@
  * 本工具把 release/ 下的磁盘产物重命名为与描述符声明 path 完全一致的名字（同名 .blockmap 一并改名），
  * 使「本地产物 / CI 上传资产 / latest.yml path」三者逐字节一致。
  *
+ * 另：**补齐自定义渠道描述符**（坑 75）。electron-updater 的渠道文件名 = `${channel}${平台后缀}`
+ * （`Provider.getCustomChannelName`；Windows 无平台后缀，macOS 为 `-mac`），而应用内「预发布渠道」
+ * 固定请求 `rc.yml`：本工具按 `latest.yml → rc.yml`、`latest-mac.yml → rc-mac.yml` 生成逐字节副本。
+ * 缺它时只有 `allowPrerelease=true`（当前安装的就是预发布版）才会回退 `latest.yml`
+ * （`GitHubProvider.js` 的 catch 分支），正式版装机直接抛
+ * `Cannot find rc.yml in the latest release artifacts … 404`。
+ *
  * 用法：node scripts/align-release-assets.cjs [--dry-run]
  */
 
@@ -23,6 +30,11 @@ const RELEASE_DIR = path.join(__dirname, '..', 'release');
 const DRY_RUN = process.argv.includes('--dry-run');
 // electron-builder 生成的更新描述符（win = latest.yml，mac = latest-mac.yml）
 const MANIFESTS = ['latest.yml', 'latest-mac.yml'];
+// 自定义渠道描述符副本：[源, 副本]（rc 渠道 → win `rc.yml` / mac `rc-mac.yml`，见文件头注）
+const CHANNEL_TWINS = [
+  ['latest.yml', 'rc.yml'],
+  ['latest-mac.yml', 'rc-mac.yml'],
+];
 
 /** electron-builder 写 path 时的规范化规则：空格 → 连字符。 */
 function normalize(name) {
@@ -112,7 +124,25 @@ function main() {
     renamed++;
   }
 
-  console.log(`[align] 完成：改名 ${renamed} · 已对齐 ${aligned} · 缺失 ${missing}`);
+  // 自定义渠道描述符补齐（坑 75）：应用内「预发布渠道」请求 rc.yml / rc-mac.yml，
+  // 内容与 latest*.yml 完全一致（同一 YAML schema，仅文件名不同）。
+  let channels = 0;
+  for (const [source, twin] of CHANNEL_TWINS) {
+    const sourcePath = path.join(RELEASE_DIR, source);
+    if (!fs.existsSync(sourcePath)) {
+      continue;
+    }
+    if (DRY_RUN) {
+      console.log(`[align] (dry-run) ${source} → ${twin}（渠道描述符副本）`);
+      channels++;
+      continue;
+    }
+    fs.copyFileSync(sourcePath, path.join(RELEASE_DIR, twin));
+    console.log(`[align] ${source} → ${twin}（渠道描述符副本）`);
+    channels++;
+  }
+
+  console.log(`[align] 完成：改名 ${renamed} · 已对齐 ${aligned} · 缺失 ${missing} · 渠道描述符 ${channels}`);
 }
 
 main();

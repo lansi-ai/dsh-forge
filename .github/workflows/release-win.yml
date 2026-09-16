@@ -95,5 +95,6 @@ jobs:
         run: |
           gh release upload "${{ steps.version.outputs.tag }}" `
             release/*setup.exe release/*portable.exe release/*.blockmap release/latest.yml `
+            release/rc.yml `
             release/SHA256SUMS --clobber --repo "$env:GITHUB_REPOSITORY"
         shell: powershell
