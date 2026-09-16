@@ -201,6 +201,11 @@ window.__ModuleLoader__.load({
             style: segStyle(channel === opt.id),
           }, opt.label)),
         ), true),
+        // 渠道语义说明（坑 75）：rc 渠道按 tag 的预发布段匹配版本（只认 -rc.N），并显式纳入
+        // 预发布候选（否则正式版装机永远「已是最新」）；已装版本更新时不会降级（electron-updater 规则）。
+        channel === 'rc' ? h('div', {
+          style: { fontSize: '12px', lineHeight: '18px', color: 'var(--dsw-alias-label-secondary)', padding: '8px 0 0' },
+        }, '预发布渠道提供 -rc.N 预发布版本；已装版本更新时不会降级。') : null,
         row('自动检查更新', h('input', {
           type: 'checkbox',
           checked: autoCheck,

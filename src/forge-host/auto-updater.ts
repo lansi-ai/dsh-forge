@@ -5,8 +5,9 @@
  * electron-updater 读取缺失的 app-update.yml 而抛错）。electron-updater 的
  * `autoUpdater` 是惰性 getter，仅在打包分支首次访问时才会实例化（dev 下永不触发）。
  *
- * 渠道（三态）：stable（正式 release，latest.yml）/ rc（prerelease，latest-rc.yml）/
- * off（完全关闭，无静默检查且手动 check 也 no-op）。
+ * 渠道（三态）：stable（正式 release，latest.yml）/ rc（预发布，rc.yml，只认 `-rc.N`）/
+ * off（完全关闭，无静默检查且手动 check 也 no-op）。**是否纳入预发布由渠道决定**（rc = 纳入；
+ * stable = 严格只看正式版），覆盖 electron-updater 的「按当前版本推导」默认（坑 75）。
  *
  * 行为：
  *   - 启动后按 `channel` / `autoCheck` 决定是否延迟静默检查（不阻塞窗口首帧）
@@ -14,7 +15,7 @@
  *     表层化）/ onStateChange（main.ts 用于刷新托盘菜单）
  *   - 托盘「立即重启以更新」→ quitAndInstall
  *   - `setChannel` / `setAutoCheck` 支持运行时切换：off↔on 即时补/撤检查并触发一次
- *     查询；rc↔stable 仅切换 feed（latest-rc.yml ↔ latest.yml），结果于下次检查或
+ *     查询；rc↔stable 切换 feed 与「是否纳入预发布」（rc.yml ↔ latest.yml），结果于下次检查或
  *     用户手动「检查更新」时生效
  *   - 关键相位落审计（checking / available / not-available / downloaded / error，
  *     经 `ctx.desktop.log` → `audit.jsonl`，含当前渠道与错误堆栈）：安装版从资源管理器
@@ -26,13 +27,14 @@
 
 import { app, BrowserWindow, Notification } from 'electron'
 import { autoUpdater } from 'electron-updater'
+import { CHANNEL_FEED, allowPrereleaseFor, type UpdaterChannel } from './updater-channels.js'
 import type { DesktopCore } from '../types/desktop.js'
 import { log, logVerbose, isVerbose } from './log.js'
 
 // ── 类型 ───────────────────────────────────────────────────────────
 
 /** 更新渠道：stable（正式）/ rc（预发布）/ off（完全关闭）。 */
-export type UpdaterChannel = 'stable' | 'rc' | 'off'
+export type { UpdaterChannel }
 
 /** 更新状态阶段。 */
 export type UpdaterPhase =
@@ -98,24 +100,9 @@ export interface AutoUpdaterHandle {
 const INITIAL_DELAY_MS = 20_000
 const TAG = '[dsh-updater]'
 
-/**
- * 渠道 → electron-updater `channel`。
- * - `stable`: null → 描述符走默认 `latest.yml`。
- * - `rc`: 'rc' → 描述符 `rc.yml`（`Provider.getCustomChannelName`，win 无平台后缀）。
- *
- * **实测语义（坑 75，2026-09-16 按 `electron-updater` 源码逐条核对）**：
- * 1. `allowPrerelease` 由当前版本自动推导（版本含预发布段才为 true）——**正式版装机永远是 false**，
- *    于是它只走 `/releases/latest`（跳过所有 pre-release），**不可能**升到预发布版；
- * 2. `allowPrerelease=true` 时按 `channel` 匹配 **tag 的预发布段**（`GitHubProvider.js:83` 的
- *    `hrefChannel === currentChannel`）：`rc` 渠道**只认 `-rc.N` 标签**，`-alpha.N` 选不中；
- * 3. 描述符 404 的**回退只发生在 `allowPrerelease=true`**（同文件 `:137-144` 的 catch 分支）：
- *    false 时直接抛 `Cannot find rc.yml …`（实机报错原文）。故 `rc.yml` 必须随包上传，
- *    不能依赖回退 —— 两条发布链均由 `scripts/align-release-assets.cjs` 生成 `latest.yml` 的副本。
- */
-const CHANNEL_FEED: Record<Exclude<UpdaterChannel, 'off'>, string | null> = {
-  stable: null,
-  rc: 'rc',
-}
+// 渠道 → feed / 是否纳入预发布：规则与实测依据集中在 `updater-channels.ts`（纯模块，可单测）。
+// 速记（坑 75）：`rc` 渠道 = 描述符 `rc.yml` + 按 tag 预发布段匹配（只认 `-rc.N`）+ 纳入预发布候选；
+// `stable` = `latest.yml` + 严格只看正式版；描述符必须随包上传（404 回退只在 allowPrerelease=true 时成立）。
 
 /** 落审计的关键相位（`downloading` 为高频进度帧，不入审计以免刷爆 audit.jsonl）。 */
 const AUDIT_PHASES: ReadonlySet<UpdaterPhase> = new Set<UpdaterPhase>([
@@ -229,10 +216,16 @@ export function createAutoUpdater(options: AutoUpdaterOptions): AutoUpdaterHandl
     }
   }
 
-  /** 按当前渠道同步 electron-updater 订阅（stable → null/默认 `latest.yml`；rc → `'rc'`，见 CHANNEL_FEED）。 */
+  /**
+   * 按当前渠道同步 electron-updater 订阅（stable → null/默认 `latest.yml`；rc → `'rc'`/`rc.yml`；
+   * 规则见 `updater-channels.ts`）。
+   */
   const syncChannelFeed = (): void => {
     if (currentChannel === 'off') return
     autoUpdater.channel = CHANNEL_FEED[currentChannel]
+    // 是否纳入预发布**由渠道决定**，覆盖 electron-updater 的「按当前版本推导」默认值
+    // （`AppUpdater.js:218`）：否则正式版装机选「预发布渠道」也永远看不到 -rc.N（坑 75）。
+    autoUpdater.allowPrerelease = allowPrereleaseFor(currentChannel)
   }
 
   /** 初始化 electron-updater（仅打包版调用一次）。 */
