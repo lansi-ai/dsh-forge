@@ -19,9 +19,20 @@
  *
  * 安装发生在 boot **之前**，所以装完本次启动即可用，不必再重启一次。
  *
+ * **管理面（M6-P6 之后补齐 · 插件列表操作）**：本模块同时承载三个 UI 动作的
+ * 宿主半——
+ *   - 安装来源登记（`installed-sources.json`）：每次安装落一条
+ *     `{ spec, sourceKind, version, installedAt }`，供「检查更新/重装」对照来源；
+ *   - 卸载（`uninstallExternalPlugin`）：删补丁行 + 删包目录 + 删登记；
+ *   - 检查更新 / 应用更新（`checkPluginUpdate` / `updateExternalPlugin`）：github
+ *     来源对照**默认分支**的 package.json 版本（轻量比较，无 semver 依赖），
+ *     更新 = 重装默认分支（忽略登记里的固定 ref）。
+ * 运行中实例无法热装载插件树（外部插件只在进程启动时发现），故安装/卸载/更新
+ * 成功后均由 UI 提示「重启后生效」——这些动作改的是磁盘，不改已挂载的树。
+ *
  * 安全：归档来自网络，所有路径先过 `safeRelative()`（拒绝绝对路径、盘符、`..`），
  * 包名过 `isSafePackageName()`（拒绝 `..` 与 Windows 保留字符），落点被链接占用时
- * 直接拒绝而不是覆盖。
+ * 直接拒绝而不是覆盖；卸载的删除同样拒绝链接与穿越。
  */
 
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
@@ -30,7 +41,7 @@ import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'no
 import { parse as parseYaml } from 'yaml'
 import { log } from './log.js'
 import { summarizeError } from './plugin-package.js'
-import { PROFILE_PATCH_TEMPLATE } from './profile-plugins.js'
+import { PATCH_FILENAME, PROFILE_PATCH_TEMPLATE } from './profile-plugins.js'
 
 /** 一次安装的结果（供启动横幅与失败诊断）。 */
 export interface PluginInstallResult {
@@ -86,6 +97,12 @@ export async function installExternalPlugin(spec: string, home: string): Promise
   clearForInstall(target)
   writeTree(target, files)
   const rowAdded = ensurePatchRow(home, entryIdOf(files, manifest, name), name)
+  writeInstalledSource(home, name, {
+    spec: source.label,
+    sourceKind: source.kind,
+    version,
+    installedAt: new Date().toISOString(),
+  })
   return { name, version, dir: target, rowAdded, source: source.label }
 }
 
@@ -383,7 +400,7 @@ function writeTree(target: string, files: readonly ArchiveEntry[]): void {
  */
 function ensurePatchRow(home: string, id: string, name: string): boolean {
   const profileDir = join(home, 'profiles', 'dsh-forge')
-  const patchPath = join(profileDir, 'cordis.patch.yml')
+  const patchPath = join(profileDir, PATCH_FILENAME)
   const row = `- insert:\n    - id: ${id}\n      name: ${name}\n`
   mkdirSync(profileDir, { recursive: true })
   const existed = existsSync(patchPath)
@@ -397,5 +414,433 @@ function ensurePatchRow(home: string, id: string, name: string): boolean {
   const separator = head.trim().length === 0 ? '' : `${head.replace(/\s*$/u, '')}\n`
   writeFileSync(patchPath, `${separator}${row}`, 'utf8')
   log.ok(`[dsh-install] 已写入装载行：${patchPath}`)
+  return true
+}
+
+// ── 安装来源登记（installed-sources.json）────────────────────────────────────
+
+/** 安装来源登记文件名（位于 forge profile 目录）。 */
+const INSTALLED_SOURCES_FILENAME = 'installed-sources.json'
+
+/** 一条安装来源登记（版本 + 来源，供「检查更新/重装」对照）。 */
+export interface InstalledSourceRecord {
+  /** 安装 spec 原文（`github:owner/repo[@ref]` 或本地目录绝对路径）。 */
+  readonly spec: string
+  readonly sourceKind: 'github' | 'dir'
+  /** 安装时读到的包版本。 */
+  readonly version: string
+  readonly installedAt: string
+}
+
+/** 读安装来源登记（文件不存在 → 空表；单条损坏只丢该条，不阻断整体）。 */
+export function readInstalledSources(home: string): Map<string, InstalledSourceRecord> {
+  const file = join(home, 'profiles', 'dsh-forge', INSTALLED_SOURCES_FILENAME)
+  const map = new Map<string, InstalledSourceRecord>()
+  if (!existsSync(file)) return map
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(readFileSync(file, 'utf8'))
+  } catch {
+    return map
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return map
+  for (const [name, value] of Object.entries(parsed)) {
+    const record = value as Partial<InstalledSourceRecord>
+    if (typeof record.spec !== 'string' || (record.sourceKind !== 'github' && record.sourceKind !== 'dir')) continue
+    map.set(name, {
+      spec: record.spec,
+      sourceKind: record.sourceKind,
+      version: typeof record.version === 'string' ? record.version : '0.0.0',
+      installedAt: typeof record.installedAt === 'string' ? record.installedAt : '',
+    })
+  }
+  return map
+}
+
+/** 写一条安装来源登记（整表重写，保持其余条目）。 */
+function writeInstalledSource(home: string, name: string, record: InstalledSourceRecord): void {
+  const dir = join(home, 'profiles', 'dsh-forge')
+  const file = join(dir, INSTALLED_SOURCES_FILENAME)
+  const map = readInstalledSources(home)
+  map.set(name, record)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(file, `${JSON.stringify(Object.fromEntries(map), null, 2)}\n`, 'utf8')
+}
+
+/** 删一条安装来源登记（没有该文件/条目时静默）。 */
+function removeInstalledSource(home: string, name: string): void {
+  const file = join(home, 'profiles', 'dsh-forge', INSTALLED_SOURCES_FILENAME)
+  if (!existsSync(file)) return
+  const map = readInstalledSources(home)
+  if (!map.delete(name)) return
+  writeFileSync(file, `${JSON.stringify(Object.fromEntries(map), null, 2)}\n`, 'utf8')
+}
+
+// ── 版本读取与比较 ───────────────────────────────────────────────────────────
+
+/** 读一个包目录的 package.json 版本；读不到返回 undefined。 */
+export function readPackageVersion(dir: string): string | undefined {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
+    const version = (parsed as { version?: unknown } | null)?.version
+    return typeof version === 'string' && version.length > 0 ? version : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** 读一个外部插件的已装版本（两个落点锚点，任意命中即返回）。 */
+function readInstalledVersion(name: string, home: string): string | undefined {
+  const dir = installedDirOf(name, home)
+  return dir === undefined ? undefined : readPackageVersion(dir)
+}
+
+/** 规范化版本号：去掉前导 `v`/`V`/`=` 与空白。 */
+function normalizeVersion(value: string): string {
+  return value.trim().replace(/^[vV=]+/u, '')
+}
+
+/**
+ * 轻量版本比较（零依赖）：点分段比较，纯数字段按数值比、其余段按字典序。
+ * 返回 >0 / 0 / <0（a 大于 / 等于 / 小于 b）。只用于「远端是否比已装新」的判定，
+ * 刻意不追求完整 semver 语义（预发布段不特殊处理，段数多的视为更新）。
+ */
+export function compareVersions(a: string, b: string): number {
+  const left = normalizeVersion(a).split('.')
+  const right = normalizeVersion(b).split('.')
+  const length = Math.max(left.length, right.length)
+  for (let i = 0; i < length; i += 1) {
+    const x = left[i]
+    const y = right[i]
+    if (x === undefined) return y === undefined ? 0 : -1
+    if (y === undefined) return 1
+    if (x === y) continue
+    const numericX = /^\d+$/u.test(x)
+    const numericY = /^\d+$/u.test(y)
+    if (numericX && numericY) {
+      if (x.length !== y.length) return x.length > y.length ? 1 : -1
+      return x < y ? -1 : 1
+    }
+    if (numericX) return 1
+    if (numericY) return -1
+    const order = x.localeCompare(y)
+    if (order !== 0) return order > 0 ? 1 : -1
+  }
+  return 0
+}
+
+// ── 更新来源解析与检查 ───────────────────────────────────────────────────────
+
+/** 一个可更新的 github 来源。 */
+interface GithubUpdateSource {
+  readonly owner: string
+  readonly repo: string
+}
+
+/** 已装包目录（两个锚点，优先 `profiles/node_modules`）。 */
+function installedDirOf(name: string, home: string): string | undefined {
+  for (const anchor of [
+    join(home, 'profiles', 'node_modules', name),
+    join(home, 'profiles', 'dsh-forge', 'node_modules', name),
+  ]) {
+    if (existsSync(join(anchor, 'package.json'))) return anchor
+  }
+  return undefined
+}
+
+/** 解析 `github:owner/repo[@ref]`（与 resolveSource 同一正则）。 */
+function parseGithubSpec(spec: string): GithubUpdateSource | undefined {
+  const matched = /^github:([^/\s]+)\/([^/@\s]+)/u.exec(spec.trim())
+  if (matched === null) return undefined
+  return { owner: matched[1] ?? '', repo: matched[2] ?? '' }
+}
+
+/** 从已装 package.json 的 `repository` 字段推导 github owner/repo。 */
+function githubSourceFromRepository(dir: string): GithubUpdateSource | undefined {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
+    const repository = (parsed as { repository?: unknown } | null)?.repository
+    if (repository === null || repository === undefined) return undefined
+    const url = typeof repository === 'string' ? repository : (repository as { url?: unknown }).url
+    if (typeof url !== 'string') return undefined
+    const matched = /github\.com[/:]([^/\s]+)\/([^/\s#?]+)/u.exec(url)
+    if (matched === null) return undefined
+    const repo = matched[2]?.replace(/\.git$/u, '')
+    if (repo === undefined || repo.length === 0) return undefined
+    return { owner: matched[1] ?? '', repo }
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * 解析外部插件的更新来源：
+ *   1. 安装来源登记里的 `github:` spec（优先）；
+ *   2. 已装 package.json 的 `repository`（github.com 链接，兼容登记缺失的存量安装）。
+ * 本地目录安装 / 无 github 来源 → undefined（无远端可对照）。
+ */
+function updateSourceOf(name: string, home: string): GithubUpdateSource | undefined {
+  const record = readInstalledSources(home).get(name)
+  if (record !== undefined && record.sourceKind === 'github') {
+    const parsed = parseGithubSpec(record.spec)
+    if (parsed !== undefined) return parsed
+  }
+  const dir = installedDirOf(name, home)
+  if (dir === undefined) return undefined
+  return githubSourceFromRepository(dir)
+}
+
+/** 拉仓库指定分支的 package.json 版本（raw.githubusercontent，不下载整包）。 */
+async function fetchRemoteVersion(owner: string, repo: string, branch: string): Promise<string> {
+  const response = await fetch(`https://raw.githubusercontent.com/${owner}/${repo}/${branch}/package.json`, {
+    headers: { 'user-agent': 'dsh-forge' },
+  })
+  if (!response.ok) throw new Error(`读取远端版本失败：HTTP ${String(response.status)}（${owner}/${repo}）`)
+  const parsed: unknown = await response.json()
+  const version = (parsed as { version?: unknown } | null)?.version
+  if (typeof version !== 'string' || version.length === 0) {
+    throw new Error(`${owner}/${repo} ${branch} 分支的 package.json 未声明版本号`)
+  }
+  return version
+}
+
+/** 「检查更新」结果（status 语义见各字段注释）。 */
+export interface PluginUpdateCheck {
+  /** 有新版本（远端版本号更高）。 */
+  readonly status: 'update-available' | 'up-to-date' | 'no-source' | 'not-installed' | 'error'
+  /** 已装版本。 */
+  readonly installedVersion?: string
+  /** 远端（默认分支）版本。 */
+  readonly remoteVersion?: string
+  /** 更新来源（`github:owner/repo`）。 */
+  readonly source?: string
+  /** 失败/无来源时的可读说明。 */
+  readonly message?: string
+}
+
+/**
+ * 检查一个外部插件是否有更新：对照来源仓库**默认分支**的 package.json 版本。
+ * 已装版本 ≥ 远端版本视为「已是最新」（版本号不同才算有更新，见 compareVersions）。
+ * 网络失败不抛：折叠为 `status: 'error'` 供 UI 直接展示。
+ */
+export async function checkPluginUpdate(name: string, home: string): Promise<PluginUpdateCheck> {
+  const installed = readInstalledVersion(name, home)
+  if (installed === undefined) return { status: 'not-installed' }
+  const source = updateSourceOf(name, home)
+  if (source === undefined) return { status: 'no-source', installedVersion: installed }
+  const label = `github:${source.owner}/${source.repo}`
+  try {
+    const branch = await resolveDefaultBranch(source.owner, source.repo)
+    const remote = await fetchRemoteVersion(source.owner, source.repo, branch)
+    if (compareVersions(remote, installed) > 0) {
+      return { status: 'update-available', installedVersion: installed, remoteVersion: remote, source: label }
+    }
+    return { status: 'up-to-date', installedVersion: installed, remoteVersion: remote, source: label }
+  } catch (error) {
+    return { status: 'error', installedVersion: installed, message: summarizeError(error) }
+  }
+}
+
+/**
+ * 应用更新：按来源重装（github 恒取默认分支，忽略登记里的固定 ref）。
+ * 复用 installExternalPlugin 的「清旧目录 → 写新包 → 幂等补行 → 重登记版本」。
+ */
+export async function updateExternalPlugin(name: string, home: string): Promise<PluginInstallResult> {
+  const source = updateSourceOf(name, home)
+  if (source === undefined) {
+    throw new Error(`插件 ${name} 没有可更新的 github 来源（本地安装无法检查更新）`)
+  }
+  return installExternalPlugin(`github:${source.owner}/${source.repo}`, home)
+}
+
+// ── 卸载 ─────────────────────────────────────────────────────────────────────
+
+/** 卸载结果。 */
+export interface PluginUninstallResult {
+  /** 包名。 */
+  readonly name: string
+  /** 删除的插入行条目数。 */
+  readonly rowsRemoved: number
+  /** 删除的包目录（绝对路径）。 */
+  readonly dirsRemoved: readonly string[]
+}
+
+/**
+ * 卸载一个用户安装的外部插件：删补丁行 + 删包目录 + 删安装来源登记。
+ *
+ * 只认「补丁行或落点目录存在」的包；两者都不在时抛错——这个判定天然排除了
+ * 应用自身的官方/自研插件（它们不在 profiles 落点，也从来不会被我们的
+ * `ensurePatchRow` 写行），不会误删内置件。
+ */
+export function uninstallExternalPlugin(name: string, home: string): PluginUninstallResult {
+  if (!isSafePackageName(name)) throw new Error(`插件名不可用：${JSON.stringify(name)}`)
+  const patchPath = join(home, 'profiles', 'dsh-forge', PATCH_FILENAME)
+  const rowsRemoved = existsSync(patchPath) ? removePatchRowsForName(patchPath, name) : 0
+  const dirsRemoved: string[] = []
+  for (const anchor of [
+    join(home, 'profiles', 'node_modules', name),
+    join(home, 'profiles', 'dsh-forge', 'node_modules', name),
+  ]) {
+    if (removeExternalDir(anchor)) dirsRemoved.push(anchor)
+  }
+  removeInstalledSource(home, name)
+  if (rowsRemoved === 0 && dirsRemoved.length === 0) {
+    throw new Error(`不是可卸载的外部插件：${name}（未找到补丁行或包目录）`)
+  }
+  return { name, rowsRemoved, dirsRemoved }
+}
+
+/** 删除一个外部包落点目录（链接占用时拒绝，绝不顺着链接删目标）。 */
+function removeExternalDir(target: string): boolean {
+  let stat: ReturnType<typeof lstatSync>
+  try {
+    stat = lstatSync(target)
+  } catch {
+    return false
+  }
+  if (stat.isSymbolicLink()) {
+    throw new Error(`卸载点已被链接占用：${target}。请手工删除该链接后重试`)
+  }
+  rmSync(target, { recursive: true, force: true })
+  return true
+}
+
+/**
+ * 从用户补丁层删掉指定裸包名的插入行。
+ *
+ * 行级编辑刻意不重新序列化 YAML：模板注释、用户手写的注释、`- insert:` 多条目
+ * 块都原样保留，只移除命中的条目（块内条目全部命中时连块头一起删）。删空后
+ * 必须写回可加载的 `[]` 占位（模板铁律：文件为空或只剩注释会导致启动失败）。
+ *
+ * @returns 被删除的条目数（0 = 未命中）。
+ */
+function removePatchRowsForName(patchPath: string, name: string): number {
+  const text = readFileSync(patchPath, 'utf8')
+  const lines = text.split('\n')
+  const quoted = quoteVariants(name)
+  const out: string[] = []
+  let removed = 0
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i]
+    const blockMatch = /^(\s*)- insert:\s*(?:#.*)?$/u.exec(line)
+    if (blockMatch === null) {
+      out.push(line)
+      i += 1
+      continue
+    }
+    const blockIndent = blockMatch[1].length
+    const block: string[] = [line]
+    let j = i + 1
+    for (; j < lines.length; j += 1) {
+      const next = lines[j]
+      if (next.trim().length === 0) {
+        block.push(next)
+        continue
+      }
+      if (indentOf(next) <= blockIndent) break
+      block.push(next)
+    }
+    const kept = stripBlockEntries(block, quoted)
+    removed += kept.removed
+    out.push(...kept.lines)
+    i = j
+  }
+  if (removed === 0) return 0
+  let joined = out.join('\n')
+  const trimmed = joined.trim()
+  if (trimmed.length === 0) {
+    joined = '[]\n'
+  } else if (hasNoActiveContent(joined)) {
+    const last = trimmed.split('\n').pop() ?? ''
+    if (last !== '[]') joined = `${trimmed}\n[]\n`
+  }
+  writeFileSync(patchPath, joined.replace(/\n{3,}/gu, '\n\n'), 'utf8')
+  return removed
+}
+
+/** 行首空白宽度。 */
+function indentOf(line: string): number {
+  return line.match(/^\s*/u)?.[0].length ?? 0
+}
+
+/** 目标裸包名的引号变体（卸载判定兼容用户手写的引号与行尾注释）。 */
+function quoteVariants(name: string): string[] {
+  const bare = name.replace(/["']/gu, '')
+  return [bare, JSON.stringify(bare), `'${bare}'`]
+}
+
+/** 转义正则元字符。 */
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
+}
+
+/**
+ * 块内按条目（`- ...` 行 + 其续行）粒度删命中条目。
+ * 返回剩余行与删除数；条目被删光时返回空行数组（调用方据此连块头一起丢）。
+ */
+function stripBlockEntries(block: string[], quoted: readonly string[]): { lines: string[]; removed: number } {
+  const head = block[0]
+  const rest = block.slice(1)
+  let entryStartIndent = Number.POSITIVE_INFINITY
+  for (const line of rest) {
+    const match = /^(\s*)- /u.exec(line)
+    if (match !== null) {
+      entryStartIndent = match[1].length
+      break
+    }
+  }
+  if (!Number.isFinite(entryStartIndent)) return { lines: block, removed: 0 }
+  const kept: string[] = []
+  let removed = 0
+  let cursor = 0
+  while (cursor < rest.length) {
+    const line = rest[cursor]
+    const match = /^(\s*)- /u.exec(line)
+    if (match === null) {
+      kept.push(line)
+      cursor += 1
+      continue
+    }
+    const entryIndent = match[1].length
+    const entry: string[] = [line]
+    let k = cursor + 1
+    for (; k < rest.length; k += 1) {
+      const next = rest[k]
+      if (next.trim().length === 0) {
+        entry.push(next)
+        continue
+      }
+      if (indentOf(next) <= entryIndent) break
+      entry.push(next)
+    }
+    if (entryNameMatches(entry, quoted)) removed += 1
+    else kept.push(...entry)
+    cursor = k
+  }
+  if (removed === 0) return { lines: block, removed: 0 }
+  if (kept.length === 0) return { lines: [], removed }
+  return { lines: [head, ...kept], removed }
+}
+
+/** 一个条目是否声明了目标裸包名（`name:` 属性行，兼容引号与行尾注释）。 */
+function entryNameMatches(entry: readonly string[], quoted: readonly string[]): boolean {
+  for (const line of entry) {
+    const trimmed = line.trim()
+    for (const value of quoted) {
+      if (new RegExp(`^name:\\s*${escapeRegExp(value)}\\s*(?:#.*)?$`, 'u').test(trimmed)) return true
+    }
+  }
+  return false
+}
+
+/** 文件里是否还有「非注释、非空、非 `[]` 占位」的生效内容。 */
+function hasNoActiveContent(text: string): boolean {
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim()
+    if (trimmed.length === 0 || trimmed.startsWith('#')) continue
+    if (trimmed === '[]') continue
+    return false
+  }
   return true
 }

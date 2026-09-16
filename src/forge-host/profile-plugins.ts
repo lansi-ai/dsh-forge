@@ -32,7 +32,8 @@ import type { BootBundleDecl } from './boot-graph.js'
 import type { PatchOptions } from '@deepseek-ai/cordis-plugin-include' with { 'resolution-mode': 'import' }
 
 const PROFILE_NAME = 'dsh-forge'
-const PATCH_FILENAME = 'cordis.patch.yml'
+/** 用户补丁层文件名（plugin-install.ts 的卸载/装源登记复用，防命名漂移）。 */
+export const PATCH_FILENAME = 'cordis.patch.yml'
 
 /** profile 骨架：应用自有的 profile 目录（bundles 留空，用户层即装载点）。 */
 const PROFILE_MANIFEST = {

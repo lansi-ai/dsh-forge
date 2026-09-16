@@ -18,9 +18,19 @@
  *   - 预设组成 = `ctx.agentPresets.compositionInventory()` 的每个预设行。
  * 此前只读图谱 → 宿主侧插件在列表与搜索中完全缺失（搜 `pwsh` 必然为空）。
  * 同名模块同时出现在两侧 → `half: 'both'`（对齐官方 hasHostHalf/hasClientHalf 语义）。
+ *
+ * **管理面（M6 插件列表操作）**：快照行对「用户安装的外部插件」额外标注
+ * `external` 元信息（来源 kind + 版本 + spec），UI 据此只给这些行显示
+ * 检查更新 / 卸载 / 更新按钮（官方/自研/预设行无此字段，天然不可操作）。
+ * 动作入口：`pluginInventory.installLocal` / `.uninstall` / `.checkUpdate` /
+ * `.applyUpdate` 四个 unary 方法（与 `list` 同一 methodTable，UI 经
+ * `window.desktopBridge.pluginInventory.*` 走 `desktop:invoke` 通道调用）。
  */
 
 import { generateBootGraph, buildThirdPartyBundles } from './boot-graph.js'
+import { resolveDshHome } from './forge-home-paths.js'
+import { readInstalledSources, readPackageVersion } from './plugin-install.js'
+import { forgeProfile } from './profile-plugins.js'
 import { log } from './log.js'
 import { registerMethod } from './bridge.js'
 
@@ -50,6 +60,20 @@ export interface PluginInventoryEntry {
   presetId?: string
   /** 该行自带的 `!!js disabled` 表达式原文（仅预设组成行可能有；解释「条件启用」用）。 */
   condition?: string
+  /** 用户安装的外部插件元信息（仅外部插件行有；无此字段的行不可操作/不可卸载）。 */
+  external?: PluginExternalMeta
+}
+
+/** 外部插件行标注（UI 据此显示版本、来源与「检查更新/卸载/更新」操作）。 */
+export interface PluginExternalMeta {
+  /** 用户安装的裸包名（patch 行 name / `profiles/node_modules` 目录名）。 */
+  readonly packageName: string
+  /** 当前已装版本（安装目录 package.json）。 */
+  readonly version: string
+  /** 记录或推导的安装来源；无登记时 null（本地安装无远端可对照）。 */
+  readonly sourceKind: 'github' | 'dir' | null
+  /** 安装 spec 原文（`github:owner/repo[@ref]` 或本地目录路径）；未知时 null。 */
+  readonly spec: string | null
 }
 
 /** 预设组成行（对齐官方 AgentPresetCompositionRow 的可序列化面）。 */
@@ -181,22 +205,72 @@ function formatPluginNames(ids: string[], width = 96, indent = '  '): string {
 }
 
 /**
+ * 构建 外部包名 → 元信息 映射（版本 / 来源 kind / spec）。
+ *
+ * 只收录「补丁层发现且包目录在盘」的外部包：版本读安装目录的 package.json
+ * （读不到就不收录——包目录已不在，列表也不该标它可操作）；来源取安装来源
+ * 登记，登记缺失（存量安装）降级为 null，UI 据此只给「卸载」不给「检查更新」。
+ */
+export function buildExternalMetaByName(): Map<string, PluginExternalMeta> {
+  const profile = forgeProfile()
+  const sources = readInstalledSources(resolveDshHome())
+  const map = new Map<string, PluginExternalMeta>()
+  for (const pkg of profile.packages) {
+    const version = readPackageVersion(pkg.dir)
+    if (version === undefined) continue
+    const record = sources.get(pkg.name)
+    map.set(pkg.name, {
+      packageName: pkg.name,
+      version,
+      sourceKind: record?.sourceKind ?? null,
+      spec: record?.spec ?? null,
+    })
+  }
+  return map
+}
+
+/**
+ * 构建 入口绝对路径 → 外部插件元信息 映射。
+ *
+ * 装载层把外部插件的插入行 `name` 改写成**入口绝对路径**（rewriteInsertNames），
+ * 故 Loader 条目的 `options.name` 就是该路径——清单按此反查外部身份，并以裸包名
+ * 作为展示/归并键（否则外部插件会以绝对路径形态出现在列表里）。
+ */
+export function buildExternalMetaByEntryPath(): Map<string, PluginExternalMeta> {
+  const profile = forgeProfile()
+  const meta = buildExternalMetaByName()
+  const map = new Map<string, PluginExternalMeta>()
+  for (const pkg of profile.packages) {
+    const record = meta.get(pkg.name)
+    if (record !== undefined) map.set(pkg.entry, record)
+  }
+  return map
+}
+
+/**
  * 把 Loader 条目合并进总表（主进程半）。
  * 同名已存在（同时有客户端 bundle）→ 原地升级为 `both`，并以真实
  * `enabled` / `fiberPhase` / Loader 条目 id 覆盖图谱侧的乐观值。
+ * 外部插件条目（`options.name` = 入口绝对路径）→ 以裸包名归并并标注 `external`。
  */
-function mergeLoaderEntries(merged: Map<string, PluginInventoryEntry>): void {
+function mergeLoaderEntries(
+  merged: Map<string, PluginInventoryEntry>,
+  externalByEntryPath: ReadonlyMap<string, PluginExternalMeta>,
+): void {
   if (boundLoader === undefined) return
   for (const entry of boundLoader.entries()) {
     if (entry.options.group === true) continue
-    const moduleName = entry.options.name
-    if (moduleName === undefined || INFRA_IDS.has(moduleName)) continue
+    const rawName = entry.options.name
+    if (rawName === undefined || INFRA_IDS.has(rawName)) continue
+    const external = externalByEntryPath.get(rawName)
+    const moduleName = external?.packageName ?? rawName
     const existing = merged.get(moduleName)
     if (existing !== undefined) {
       existing.half = 'both'
       existing.entryId = entry.id
       existing.enabled = !entry.disabled
       existing.fiberPhase = toFiberPhase(entry.fiber?.state)
+      if (external !== undefined) existing.external = external
       continue
     }
     merged.set(moduleName, {
@@ -207,6 +281,7 @@ function mergeLoaderEntries(merged: Map<string, PluginInventoryEntry>): void {
       half: 'host',
       source: classifyPlugin(moduleName),
       presetProviders: [],
+      ...(external !== undefined ? { external } : {}),
     })
   }
 }
@@ -273,6 +348,7 @@ function collectPresetRows(
 function mergeEntries(
   clientIds: Iterable<string>,
   presets: PluginInventoryPreset[],
+  externalByEntryPath: ReadonlyMap<string, PluginExternalMeta>,
 ): PluginInventoryEntry[] {
   const merged = new Map<string, PluginInventoryEntry>()
   for (const id of clientIds) {
@@ -287,7 +363,7 @@ function mergeEntries(
       presetProviders: [],
     })
   }
-  mergeLoaderEntries(merged)
+  mergeLoaderEntries(merged, externalByEntryPath)
   const globalRows = [...merged.values()].sort(compareEntries)
   return [...globalRows, ...collectPresetRows(presets, merged)]
 }
@@ -295,7 +371,7 @@ function mergeEntries(
 /** 仅主进程半的清单行（启动日志用；不重扫客户端图谱文件）。 */
 function loaderOnlyEntries(): PluginInventoryEntry[] {
   const merged = new Map<string, PluginInventoryEntry>()
-  mergeLoaderEntries(merged)
+  mergeLoaderEntries(merged, new Map())
   return [...merged.values()].sort(compareEntries)
 }
 
@@ -330,6 +406,7 @@ export async function buildPluginInventorySnapshot(): Promise<PluginInventorySna
   const entries = mergeEntries(
     graph.entries.map((entry) => entry.id),
     agentPresets,
+    buildExternalMetaByEntryPath(),
   )
   return { entries, agentPresets }
 }
@@ -374,6 +451,66 @@ export function bindCordisInventoryHost(ctx: HostContextLike): void {
 export function registerCordisInventoryCompat(): () => void {
   const pluginInventoryReply = async (): Promise<PluginInventorySnapshot> => buildPluginInventorySnapshot()
   registerMethod('pluginInventory/list', pluginInventoryReply)
+
+  // ── 插件列表操作（管理面 · UI 经 window.desktopBridge.pluginInventory.* 调用）──
+  // 与 `list` 同一 unary methodTable：desktop:invoke 通道命中后把 params 原样传本处理器。
+  // 安装/卸载/更新都只改磁盘（外部插件只在进程启动时被发现），成功后由 UI 提示重启。
+
+  /** 本地目录安装（native 目录选择器；取消返回 cancelled）。 */
+  registerMethod('pluginInventory.installLocal', async (): Promise<object> => {
+    const { dialog } = await import('electron')
+    const picked = await dialog.showOpenDialog({
+      title: '选择插件目录',
+      buttonLabel: '安装此目录为插件',
+      properties: ['openDirectory'],
+    })
+    if (picked.canceled || picked.filePaths.length === 0) return { cancelled: true }
+    const { installExternalPlugin } = await import('./plugin-install.js')
+    const installed = await installExternalPlugin(picked.filePaths[0]!, resolveDshHome())
+    return {
+      cancelled: false,
+      name: installed.name,
+      version: installed.version,
+      dir: installed.dir,
+      rowAdded: installed.rowAdded,
+    }
+  })
+
+  /** 卸载一个用户安装的外部插件。 */
+  registerMethod('pluginInventory.uninstall', async (params: unknown): Promise<object> => {
+    const packageName = (params as { packageName?: unknown } | null)?.packageName
+    if (typeof packageName !== 'string' || packageName.length === 0) {
+      throw new Error('pluginInventory.uninstall 需要 packageName')
+    }
+    const { uninstallExternalPlugin } = await import('./plugin-install.js')
+    return uninstallExternalPlugin(packageName, resolveDshHome())
+  })
+
+  /** 检查一个外部插件的更新（对照来源仓库默认分支）。 */
+  registerMethod('pluginInventory.checkUpdate', async (params: unknown): Promise<object> => {
+    const packageName = (params as { packageName?: unknown } | null)?.packageName
+    if (typeof packageName !== 'string' || packageName.length === 0) {
+      throw new Error('pluginInventory.checkUpdate 需要 packageName')
+    }
+    const { checkPluginUpdate } = await import('./plugin-install.js')
+    return checkPluginUpdate(packageName, resolveDshHome())
+  })
+
+  /** 应用更新（按来源重装默认分支）。 */
+  registerMethod('pluginInventory.applyUpdate', async (params: unknown): Promise<object> => {
+    const packageName = (params as { packageName?: unknown } | null)?.packageName
+    if (typeof packageName !== 'string' || packageName.length === 0) {
+      throw new Error('pluginInventory.applyUpdate 需要 packageName')
+    }
+    const { updateExternalPlugin } = await import('./plugin-install.js')
+    const installed = await updateExternalPlugin(packageName, resolveDshHome())
+    return {
+      ok: true,
+      name: installed.name,
+      version: installed.version,
+      dir: installed.dir,
+    }
+  })
 
   // 启动日志：界面半（客户端图谱）汇总 + 按来源逐名列出。主进程半在 boot 完成后的
   // bindCordisInventoryHost 中另报（此时 Loader 尚不可用）。

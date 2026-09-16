@@ -243,6 +243,38 @@ interface DesktopIconTheme {
   /** 按槽位上传图标（global 槽位写 userData/icons；pack 槽位写当前激活包）。 */
   upload(slotId: string): Promise<{ ok: boolean; imported?: string[]; scope?: 'global' | 'pack'; themeId?: string; cloned?: boolean; message?: string }>
 }
+
+/** 本地目录安装结果（host `pluginInventory.installLocal`，取消返回 cancelled）。 */
+type PluginInstallLocalResult =
+  | { cancelled: true }
+  | { cancelled: false; name: string; version: string; dir: string; rowAdded: boolean }
+
+/** 卸载结果（host `pluginInventory.uninstall`）。 */
+interface PluginUninstallResult {
+  name: string
+  rowsRemoved: number
+  dirsRemoved: string[]
+}
+
+/** 检查更新结果（host `pluginInventory.checkUpdate`）。 */
+type PluginUpdateCheckResult =
+  | { status: 'update-available'; installedVersion: string; remoteVersion: string; source?: string }
+  | { status: 'up-to-date'; installedVersion: string; remoteVersion?: string; source?: string }
+  | { status: 'no-source'; installedVersion: string; source?: string; message?: string }
+  | { status: 'not-installed' }
+  | { status: 'error'; installedVersion?: string; message?: string }
+
+/** 插件管理操作接口（插件列表 · 本地安装 / 卸载 / 检查更新 / 应用更新）。 */
+interface DesktopPluginInventory {
+  /** 选本地目录安装外部插件（native 目录选择器；取消返回 { cancelled: true }）。 */
+  installLocal(): Promise<PluginInstallLocalResult>
+  /** 卸载一个用户安装的外部插件（删 patch 行 + 包目录；重启后彻底移除）。 */
+  uninstall(packageName: string): Promise<PluginUninstallResult>
+  /** 检查一个外部插件的更新（对照来源仓库默认分支最新版；本地安装无来源）。 */
+  checkUpdate(packageName: string): Promise<PluginUpdateCheckResult>
+  /** 应用更新（按来源重装默认分支；完成提示重启生效）。 */
+  applyUpdate(packageName: string): Promise<{ ok: boolean; name: string; version: string; dir: string }>
+}
 export interface DesktopBridge {
   /** 上行 RPC 调用（替换 WebApiClient 的 doFetch）。 */
   rpc(method: string, body: unknown): Promise<unknown>
@@ -279,6 +311,8 @@ export interface DesktopBridge {
   network: DesktopNetwork
   /** 桌面图标主题操作（图标主题与颜色主题独立设置，颜色主题后续版本）。 */
   iconTheme: DesktopIconTheme
+  /** 插件管理操作（插件列表 · 本地安装 / 卸载 / 检查更新）。 */
+  pluginInventory: DesktopPluginInventory
   /** 全局快捷键操作。 */
   desktopShortcut: DesktopShortcut
   /** 剪贴板操作。 */
@@ -655,6 +689,38 @@ function createDesktopBridge(): DesktopBridge {
           method: 'desktop.iconTheme.upload',
           params: { slotId },
         }) as Promise<{ ok: boolean; imported?: string[]; scope?: 'global' | 'pack'; themeId?: string; cloned?: boolean; message?: string }>
+      },
+    },
+
+    // ── 插件管理操作（插件列表 · 本地安装 / 卸载 / 检查更新）────────
+    pluginInventory: {
+      installLocal(): Promise<PluginInstallLocalResult> {
+        return ipcRenderer.invoke(IPC_CHANNELS.DESKTOP_INVOKE, {
+          rpcId: generateUuid(),
+          method: 'pluginInventory.installLocal',
+          params: undefined,
+        }) as Promise<PluginInstallLocalResult>
+      },
+      uninstall(packageName: string): Promise<PluginUninstallResult> {
+        return ipcRenderer.invoke(IPC_CHANNELS.DESKTOP_INVOKE, {
+          rpcId: generateUuid(),
+          method: 'pluginInventory.uninstall',
+          params: { packageName },
+        }) as Promise<PluginUninstallResult>
+      },
+      checkUpdate(packageName: string): Promise<PluginUpdateCheckResult> {
+        return ipcRenderer.invoke(IPC_CHANNELS.DESKTOP_INVOKE, {
+          rpcId: generateUuid(),
+          method: 'pluginInventory.checkUpdate',
+          params: { packageName },
+        }) as Promise<PluginUpdateCheckResult>
+      },
+      applyUpdate(packageName: string): Promise<{ ok: boolean; name: string; version: string; dir: string }> {
+        return ipcRenderer.invoke(IPC_CHANNELS.DESKTOP_INVOKE, {
+          rpcId: generateUuid(),
+          method: 'pluginInventory.applyUpdate',
+          params: { packageName },
+        }) as Promise<{ ok: boolean; name: string; version: string; dir: string }>
       },
     },
 

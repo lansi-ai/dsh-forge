@@ -2,12 +2,22 @@
 
 > 真源：`src/forge-host/boot.ts`（Host 树 §1+§4 insert）与 `src/forge-host/boot-graph.ts`（Client 图谱 desktopDecls + CLIENT_EXCLUDE_IDS）。本文为派生视图，架构变更时同步更新。
 > 命名规范（D-19）：桌面插件统一 `@lansi-ai/dsh-*`（蓝思 scope + dsh 生态前缀）。
-> 状态更新至：**`0.1.2-alpha.4` 基线（2026-09-02 M4-d4）· M6-P6 首件「模型」section 自有化代码完成（2026-09-15，待实机点验）**。
+> 状态更新至：**`0.1.2-alpha.4` 基线（2026-09-02 M4-d4）· M6-P6 首件「模型」section 自有化代码完成（2026-09-15，待实机点验）· 插件列表管理面（本地安装/卸载/检查更新）代码完成（2026-09-17，待实机点验）**。
 > HTML 可视化版：`docs/architecture-plugins.html`（尚未同步 0.1.2 后状态，以本文为准）。
 
 图例：✅ 已装载 · ⛔ 已禁用 · 🚫 被排除（不入图谱）· 🟠 预载注册（不激活）· 🔁 已自有化（官方件被桌面件替换）
 
 ---
+
+## 〇·附、插件列表管理面（v4 · 本地安装 / 卸载 / 检查更新）
+
+> 设置 → 插件 → 「插件列表」Tab（`@lansi-ai/dsh-forge-plugin-inventory`）从只读清单扩展出**管理面**：
+
+- **本地安装**：Tab 顶部「安装本地插件…」→ native 目录选择器 → host `pluginInventory.installLocal`（`forge-host/plugin-install.ts` 的 `installExternalPlugin`，本地目录旁加载）→ 成功提示「重启后生效」。
+- **卸载**：仅**用户安装的外部插件**行（快照行带 `external` 元信息 = 补丁层发现 + `profiles/node_modules` 落点在盘）显示；两步确认后 host `pluginInventory.uninstall` 删补丁行 + 包目录 + 安装来源登记。官方/自研/预设组成行没有该字段，天然不可卸。
+- **检查更新 / 更新**：GitHub 来源行（安装来源登记 `installed-sources.json` 的 `github:` spec，或已装 package.json `repository` 回溯）对照**仓库默认分支**的 package.json 版本（`compareVersions` 轻量比较）；有新版 → 「更新到 vX」= 按来源重装默认分支。本地安装行无更新来源。
+- **数据面**：`cordis-inventory.ts` 只读快照 `pluginInventory/list` 之外，新增四个 unary 方法 `pluginInventory.installLocal / .uninstall / .checkUpdate / .applyUpdate`（与 `list` 同一 bridge methodTable，UI 经 `window.desktopBridge.pluginInventory.*` 走 `desktop:invoke` 通道调用，**不给官方 typed remote 域加方法**——那需要 client 侧 typert 描述符）。
+- **生效语义**：外部插件只在进程启动时发现，安装/卸载/更新都只改磁盘；UI 一律提示「重启后生效」，不做热装载。
 
 ## 〇、插件自有化进度（M6 · D-20 全量自绘路线）
 

@@ -17,6 +17,17 @@
  *   - 每行精简两行：短名 + 状态；第二行（全局）包名 · 承载面、（预设）包名 · 条目 id；
  *     点行展开详情（条目 / 承载 / 来源 / 运行相位 / 条件 / 预设）
  *
+ * 管理面（v4 · M6 插件列表操作）：对**用户安装的外部插件**行（快照行带
+ * `external` 元信息）——
+ *   - 行详情追加 版本 / 来源（安装 spec）；
+ *   - 操作区：GitHub 来源行可「检查更新 → 更新到 vX」；所有外部行可「卸载」
+ *     （两步确认）；本地安装行无「检查更新」（无远端来源）；
+ *   - 顶部「安装本地插件…」按钮（native 目录选择器 → host `installExternalPlugin`）；
+ *   - 安装 / 更新 / 卸载只改磁盘，外部插件在进程启动时发现 → 成功提示「重启后生效」。
+ * 动作经 `window.desktopBridge.pluginInventory.*`（desktop:invoke 通道）调用，
+ * 与只用 `ctx.remote.pluginInventory.list()` 读快照分开，避免给官方的 typed
+ * remote 域加方法（那需要 client 侧 typert 描述符）。
+ *
  * 去噪决策（对照 v1/v2）：
  *   - 取消逐行卡片边框，改用分隔线 + 间距承载层次；
  *   - 删掉与短名重复的「模块 xxx」，包名只说一次；
@@ -83,6 +94,33 @@ window.__ModuleLoader__.load({
       rowExpand: '展开详情',
       rowCollapse: '收起详情',
       groupToggle: '折叠或展开分组',
+      // ── 管理面（v4） ──
+      installLocal: '安装本地插件…',
+      installingLocal: '正在安装…',
+      unsupported: '当前构建不支持插件管理（desktopBridge 未提供 pluginInventory 域）',
+      installDone: '{name} v{version} 已安装 —— 重启应用后生效',
+      updateDone: '{name} 已更新到 v{version} —— 重启应用后生效',
+      uninstallDone: '{name} 已卸载 —— 重启应用后生效',
+      actionFail: '操作失败：{message}',
+      checkUpdate: '检查更新',
+      checking: '正在检查…',
+      upToDate: '已是最新 v{version}',
+      updateAvailable: '发现新版本 v{version}',
+      applyUpdate: '更新到 v{version}',
+      updating: '正在更新…',
+      updateNoSource: '本地安装无更新来源',
+      updateCheckFail: '检查更新失败',
+      retryCheck: '重试',
+      uninstall: '卸载',
+      uninstallConfirm: '卸载后将删除补丁行与包目录，且重启后彻底移除。确认卸载 {name}？',
+      confirmUninstall: '确认卸载',
+      cancelAction: '取消',
+      uninstalling: '正在卸载…',
+      factVersion: '版本',
+      factSourceSpec: '来源',
+      externalGithub: 'GitHub 安装',
+      externalLocal: '本地安装',
+      noticeDismiss: '关闭提示',
     }
 
     const en = {
@@ -128,6 +166,33 @@ window.__ModuleLoader__.load({
       rowExpand: 'Expand details',
       rowCollapse: 'Collapse details',
       groupToggle: 'Collapse or expand group',
+      // ── management surface (v4) ──
+      installLocal: 'Install local plugin…',
+      installingLocal: 'Installing…',
+      unsupported: 'Plugin management is unavailable in this build (desktopBridge.pluginInventory missing)',
+      installDone: '{name} v{version} installed — restart to take effect',
+      updateDone: '{name} updated to v{version} — restart to take effect',
+      uninstallDone: '{name} uninstalled — restart to fully remove',
+      actionFail: 'Action failed: {message}',
+      checkUpdate: 'Check for updates',
+      checking: 'Checking…',
+      upToDate: 'Up to date (v{version})',
+      updateAvailable: 'New version v{version}',
+      applyUpdate: 'Update to v{version}',
+      updating: 'Updating…',
+      updateNoSource: 'Local install has no update source',
+      updateCheckFail: 'Failed to check for updates',
+      retryCheck: 'Retry',
+      uninstall: 'Uninstall',
+      uninstallConfirm: 'Uninstalling removes the patch row and package directory; it is fully removed after restart. Uninstall {name}?',
+      confirmUninstall: 'Uninstall',
+      cancelAction: 'Cancel',
+      uninstalling: 'Uninstalling…',
+      factVersion: 'Version',
+      factSourceSpec: 'Source',
+      externalGithub: 'GitHub install',
+      externalLocal: 'Local install',
+      noticeDismiss: 'Dismiss',
     }
 
     // ── 视觉：状态文案色调 + 尺寸令牌 ──────────────────────────────
@@ -188,6 +253,7 @@ window.__ModuleLoader__.load({
       rowSide: { display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '1px', flexShrink: 0, maxWidth: '46%' },
       statusText: { fontSize: '12px', lineHeight: '18px', whiteSpace: 'nowrap' },
       presetText: { fontSize: '11px', lineHeight: '16px', color: TONE.info, textAlign: 'right', wordBreak: 'break-all' },
+      externalTag: { fontSize: '11px', lineHeight: '16px', color: 'var(--dsw-alias-label-secondary)', textAlign: 'right', wordBreak: 'break-all' },
       detail: {
         display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '2px 12px',
         padding: '4px 2px 10px', fontSize: '11px', lineHeight: '17px',
@@ -202,6 +268,57 @@ window.__ModuleLoader__.load({
         fontSize: '13px', fontWeight: 500,
         background: 'var(--dsw-alias-button-info-fill)', color: 'var(--dsw-alias-label-primary)',
       },
+      // 管理面（v4）：结果横幅 + 行内操作
+      notice: {
+        display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 10px',
+        borderRadius: '8px', fontSize: '13px', lineHeight: '20px', border: '1px solid',
+      },
+      noticeOk: {
+        borderColor: 'light-dark(#86efac, #14532d)',
+        background: 'light-dark(#f0fdf4, #052e16)',
+        color: TONE.ok,
+      },
+      noticeError: {
+        borderColor: 'light-dark(#fca5a5, #7f1d1d)',
+        background: 'light-dark(#fef2f2, #450a0a)',
+        color: TONE.bad,
+      },
+      noticeText: { flex: 1, minWidth: 0, wordBreak: 'break-all' },
+      noticeDismiss: {
+        padding: '2px 8px', borderRadius: '6px', border: '1px solid currentColor',
+        background: 'transparent', cursor: 'pointer', fontSize: '12px', lineHeight: '18px',
+        color: 'inherit', flexShrink: 0,
+      },
+      installRow: {
+        display: 'flex', alignItems: 'center', justifyContent: 'flex-start',
+        padding: '0 2px',
+      },
+      installButton: {
+        display: 'inline-flex', alignItems: 'center', gap: '6px',
+        padding: '5px 12px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2)',
+        background: 'var(--dsw-alias-button-info-fill)', cursor: 'pointer',
+        fontSize: '13px', fontWeight: 500, lineHeight: '20px',
+        color: 'var(--dsw-alias-label-primary)',
+      },
+      actions: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px', padding: '2px 0 8px' },
+      actionButton: {
+        padding: '4px 10px', borderRadius: '6px', border: '1px solid var(--dsw-alias-border-l2)',
+        background: 'transparent', cursor: 'pointer', fontSize: '12px', lineHeight: '18px',
+        color: 'var(--dsw-alias-label-primary)',
+      },
+      actionPrimary: {
+        background: 'var(--dsw-alias-button-info-fill)',
+        borderColor: 'var(--dsw-alias-button-info-fill)',
+        color: 'var(--dsw-alias-label-primary)',
+      },
+      actionDanger: {
+        color: 'light-dark(#b91c1c, #fca5a5)',
+        borderColor: 'light-dark(#fca5a5, #7f1d1d)',
+      },
+      actionDisabled: { cursor: 'default', opacity: 0.55 },
+      actionText: { fontSize: '12px', lineHeight: '18px', color: 'var(--dsw-alias-label-secondary)' },
+      actionTextInfo: { fontSize: '12px', lineHeight: '18px', color: TONE.info },
+      actionTextBad: { fontSize: '12px', lineHeight: '18px', color: TONE.bad, wordBreak: 'break-all' },
     }
 
     // ── 工具 ──────────────────────────────────────────────────────
@@ -299,15 +416,18 @@ window.__ModuleLoader__.load({
       )
     }
 
-    /** 单行（精简两行 + 可选展开详情）。 */
-    function PluginRow({ row, t, expanded, onToggle }) {
+    /** 单行（精简两行 + 可选展开详情 + 外部插件操作区）。 */
+    function PluginRow({ row, t, expanded, onToggle, actions }) {
       const status = statusOf(row)
       const preset = presetText(row, t)
       const half = t(HALF_KEY[row.half])
       const entry = entrySubtitle(row.entryId)
       const sub = row.half === 'preset'
         ? `${row.moduleName} · ${entry}`
-        : `${row.moduleName} · ${half}`
+        : `${row.moduleName} · ${half}${row.external !== undefined ? ` · v${row.external.version}` : ''}`
+      const externalTag = row.external !== undefined
+        ? t(row.external.sourceKind === 'github' ? 'externalGithub' : 'externalLocal')
+        : null
       const detail = [
         [t('factEntry'), entry],
         [t('factHalf'), half],
@@ -317,6 +437,10 @@ window.__ModuleLoader__.load({
       if (row.condition !== undefined) detail.push([t('factCondition'), row.condition])
       if (row.half !== 'preset' && row.presetProviders.length > 0) {
         detail.push([t('factPreset'), row.presetProviders.join(' · ')])
+      }
+      if (row.external !== undefined) {
+        detail.push([t('factVersion'), row.external.version])
+        if (row.external.spec !== null) detail.push([t('factSourceSpec'), row.external.spec])
       }
 
       return h(React.Fragment, null,
@@ -334,6 +458,7 @@ window.__ModuleLoader__.load({
           h('div', { style: S.rowSide },
             h('span', { style: { ...S.statusText, color: TONE[status.tone] } }, t(status.key)),
             preset === null ? null : h('span', { style: S.presetText }, preset),
+            externalTag === null ? null : h('span', { style: S.externalTag }, externalTag),
           ),
         ),
         expanded
@@ -342,6 +467,47 @@ window.__ModuleLoader__.load({
               h('span', { key: `${key}-v`, style: S.detailVal }, value),
             ]))
           : null,
+        expanded && actions !== null ? actions : null,
+      )
+    }
+
+    /** 一行外部插件的操作区（检查更新 / 更新 / 卸载；非外部行返回 null）。 */
+    function RowActions({ row, t, action, onCheck, onApply, onBeginUninstall, onCancelUninstall, onUninstall }) {
+      if (row.external === undefined) return null
+      const phase = action?.phase ?? 'idle'
+      const busy = phase === 'checking' || phase === 'uninstalling' || phase === 'updating'
+      const button = (label, onClick, style) => h('button', {
+        type: 'button',
+        style: { ...S.actionButton, ...style, ...(busy ? S.actionDisabled : null) },
+        disabled: busy,
+        onClick,
+      }, label)
+
+      const buttons = []
+      let text = null
+      if (phase === 'checking') text = h('span', { style: S.actionText }, t('checking'))
+      else if (phase === 'updating') text = h('span', { style: S.actionText }, t('updating'))
+      else if (phase === 'uninstalling') text = h('span', { style: S.actionText }, t('uninstalling'))
+      else if (phase === 'available') {
+        text = h('span', { style: S.actionTextInfo }, t('updateAvailable', { version: action?.version }))
+        buttons.push(button(t('applyUpdate', { version: action?.version }), onApply, S.actionPrimary))
+      } else if (phase === 'ready') {
+        text = h('span', { style: S.actionTextInfo }, t('upToDate', { version: action?.version }))
+      } else if (phase === 'error') {
+        text = h('span', { style: S.actionTextBad, role: 'alert' }, action?.message ?? t('updateCheckFail'))
+        if (row.external.sourceKind === 'github') buttons.push(button(t('retryCheck'), onCheck))
+      } else if (phase === 'confirm') {
+        text = h('span', { style: { ...S.actionTextBad, maxWidth: '420px' } }, t('uninstallConfirm', { name: row.external.packageName }))
+        buttons.push(button(t('confirmUninstall'), onUninstall, S.actionDanger))
+        buttons.push(button(t('cancelAction'), onCancelUninstall))
+      } else if (phase === 'idle') {
+        if (row.external.sourceKind === 'github') buttons.push(button(t('checkUpdate'), onCheck))
+        buttons.push(button(t('uninstall'), onBeginUninstall, S.actionDanger))
+      }
+
+      return h('div', { style: S.actions },
+        text === null ? null : text,
+        ...buttons,
       )
     }
 
@@ -354,6 +520,24 @@ window.__ModuleLoader__.load({
       const [expandedRow, setExpandedRow] = React.useState(null)
       const [chosenPreset, setChosenPreset] = React.useState(null)
       const [state, setState] = React.useState({ status: 'loading' })
+
+      // ── 管理面（v4）：结果横幅 + 安装中 + 行动作状态 ──
+      const [notice, setNotice] = React.useState(null)
+      const [installing, setInstalling] = React.useState(false)
+      const [rowActions, setRowActions] = React.useState({})
+      const bridge = window.desktopBridge?.pluginInventory ?? null
+      const rowKeyOf = (row) => `${row.half}:${row.entryId}:${row.moduleName}`
+      const patchRowAction = (key, patch) => {
+        setRowActions((current) => ({ ...current, [key]: { ...(current[key] ?? {}), ...patch } }))
+      }
+      const resetRowAction = (key) => {
+        setRowActions((current) => {
+          const next = { ...current }
+          delete next[key]
+          return next
+        })
+      }
+      const actionErrorText = (error) => (error instanceof Error ? error.message : String(error))
 
       React.useEffect(() => {
         let alive = true
@@ -369,6 +553,79 @@ window.__ModuleLoader__.load({
       const retry = () => {
         setState({ status: 'loading' })
         setRequest((value) => value + 1)
+      }
+
+      // ── 管理动作 ──
+      const guardBridge = () => {
+        if (bridge !== null) return true
+        setNotice({ kind: 'error', text: t('unsupported') })
+        return false
+      }
+
+      const installLocal = async () => {
+        if (!guardBridge()) return
+        setInstalling(true)
+        setNotice(null)
+        try {
+          const result = await bridge.installLocal()
+          if (result.cancelled) return
+          setNotice({ kind: 'ok', text: t('installDone', { name: result.name, version: result.version }) })
+          setRequest((value) => value + 1)
+        } catch (error) {
+          setNotice({ kind: 'error', text: t('actionFail', { message: actionErrorText(error) }) })
+        } finally {
+          setInstalling(false)
+        }
+      }
+
+      const checkUpdate = async (row) => {
+        if (!guardBridge() || row.external === undefined) return
+        const key = rowKeyOf(row)
+        patchRowAction(key, { phase: 'checking' })
+        try {
+          const result = await bridge.checkUpdate(row.external.packageName)
+          if (result.status === 'update-available') {
+            patchRowAction(key, { phase: 'available', version: result.remoteVersion })
+          } else if (result.status === 'up-to-date') {
+            patchRowAction(key, { phase: 'ready', version: result.remoteVersion })
+          } else if (result.status === 'no-source') {
+            patchRowAction(key, { phase: 'error', message: t('updateNoSource') })
+          } else {
+            patchRowAction(key, { phase: 'error', message: result.message ?? t('updateCheckFail') })
+          }
+        } catch (error) {
+          patchRowAction(key, { phase: 'error', message: actionErrorText(error) })
+        }
+      }
+
+      const applyUpdate = async (row) => {
+        if (!guardBridge() || row.external === undefined) return
+        const key = rowKeyOf(row)
+        patchRowAction(key, { phase: 'updating' })
+        try {
+          const result = await bridge.applyUpdate(row.external.packageName)
+          setNotice({ kind: 'ok', text: t('updateDone', { name: result.name, version: result.version }) })
+          patchRowAction(key, { phase: 'ready', version: result.version })
+          setRequest((value) => value + 1)
+        } catch (error) {
+          setNotice({ kind: 'error', text: t('actionFail', { message: actionErrorText(error) }) })
+          patchRowAction(key, { phase: 'error', message: actionErrorText(error) })
+        }
+      }
+
+      const doUninstall = async (row) => {
+        if (!guardBridge() || row.external === undefined) return
+        const key = rowKeyOf(row)
+        patchRowAction(key, { phase: 'uninstalling' })
+        try {
+          const result = await bridge.uninstall(row.external.packageName)
+          setNotice({ kind: 'ok', text: t('uninstallDone', { name: result.name }) })
+          resetRowAction(key)
+          setRequest((value) => value + 1)
+        } catch (error) {
+          setNotice({ kind: 'error', text: t('actionFail', { message: actionErrorText(error) }) })
+          resetRowAction(key)
+        }
       }
 
       if (state.status === 'loading') return h('p', { style: S.status }, t('loading'))
@@ -396,18 +653,45 @@ window.__ModuleLoader__.load({
       const searching = normalizedQuery.length > 0
 
       const toggleGroup = (key) => setOpenGroups((current) => ({ ...current, [key]: !current[key] }))
-      const renderRow = (row) => h(PluginRow, {
-        key: `${row.half}:${row.entryId}:${row.moduleName}`,
-        row,
-        t,
-        expanded: expandedRow === `${row.half}:${row.entryId}:${row.moduleName}`,
-        onToggle: () => setExpandedRow((current) => (current === `${row.half}:${row.entryId}:${row.moduleName}` ? null : `${row.half}:${row.entryId}:${row.moduleName}`)),
-      })
+      const renderRow = (row) => {
+        const key = `${row.half}:${row.entryId}:${row.moduleName}`
+        return h(PluginRow, {
+          key,
+          row,
+          t,
+          expanded: expandedRow === key,
+          onToggle: () => setExpandedRow((current) => (current === key ? null : key)),
+          actions: row.external === undefined
+            ? null
+            : h(RowActions, {
+                row,
+                t,
+                action: rowActions[key],
+                onCheck: () => checkUpdate(row),
+                onApply: () => applyUpdate(row),
+                onBeginUninstall: () => patchRowAction(key, { phase: 'confirm' }),
+                onCancelUninstall: () => resetRowAction(key),
+                onUninstall: () => doUninstall(row),
+              }),
+        })
+      }
 
       const globalOpen = searching || openGroups.global
       const presetOpen = searching || openGroups.preset
 
       return h('div', { style: S.wrap },
+        notice === null ? null : h('div', {
+          style: { ...S.notice, ...(notice.kind === 'ok' ? S.noticeOk : S.noticeError) },
+          role: notice.kind === 'error' ? 'alert' : 'status',
+        },
+          h('span', { style: S.noticeText }, notice.text),
+          h('button', {
+            type: 'button',
+            style: S.noticeDismiss,
+            'aria-label': t('noticeDismiss'),
+            onClick: () => setNotice(null),
+          }, t('noticeDismiss')),
+        ),
         h('div', { style: S.search },
           h('input', {
             type: 'text',
@@ -417,6 +701,14 @@ window.__ModuleLoader__.load({
             onChange: (event) => setQuery(event.target.value),
             style: S.searchInput,
           }),
+        ),
+        h('div', { style: S.installRow },
+          h('button', {
+            type: 'button',
+            style: { ...S.installButton, ...(installing ? S.actionDisabled : null) },
+            disabled: installing,
+            onClick: installLocal,
+          }, installing ? t('installingLocal') : t('installLocal')),
         ),
         h('div', { style: S.chips }, FILTERS.map((id) => h('button', {
           key: id,
