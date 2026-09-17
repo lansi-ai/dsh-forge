@@ -1,11 +1,15 @@
 # dsh-forge — DeepSeek Harness 桌面客户端（非套壳路线）
 
-> 状态：**M1 实施中** — 脚手架已就绪（Electron 44 + TS strict + ESLint），主链路由 `src/forge-shell` 起步。
-> 目标版本基线：`@deepseek-ai/dsh` `0.1.0-rc.8`（本地检出权威基线；2026-09-01 实测上游最新稳定为 `0.1.1-rc.2`，diff 已在升级迁移表登记，升级前核查）。
+> 状态：**M1–M3 已完成 · M6 全量自绘 UI 主线进行中**（Electron 44 + TS strict + ESLint）。
+> 最新执行状态以 [`docs/active-context.md`](docs/active-context.md) 任务看板为准（本文为项目总纲，非滚动状态源）。
+> **AI 协作规则入口**：[`docs/PROJECT-RULES.md`](docs/PROJECT-RULES.md)（权威规则）+ [`docs/startup-prompts.md`](docs/startup-prompts.md)（新会话启动咒语，复制即用）。
 >
-> **当前优先级（2026-08 用户确认）**：先做「把 DSH 做成桌面应用」的技术方案，**主面复用官方 Web UI 发行物**；
-> 自绘 Desktop UI（[`docs/13-ui-design.md`](docs/13-ui-design.md)、[ADR-006](docs/adr/adr-006-custom-ui.md)）**暂缓为二期可选**，
-> 本轮不纳入主线。下文「定位/判定/路线」均以「官方 UI 复用 + 内嵌宿主 + IPC 载波」为默认方案。
+> 目标版本基线：`@deepseek-ai/dsh` 已升级至 **`0.1.5-rc.2`**（2026-09-11 C-7 人工适配，零代码适配；
+> 升级历史见 [`docs/upstream-migrations.md`](docs/upstream-migrations.md)，拴合面速查见 [`docs/upstream-contracts.md`](docs/upstream-contracts.md)）。
+>
+> **UI 路线（2026-08-27 用户决策 D-20 更新）**：主面已由「官方 Web UI 复用（M1–M3 底座）」切换为 **M6 全量自绘**
+> （逐槽位替换官方 `ui-*`，[ADR-006](docs/adr/adr-006-custom-ui.md) 已启用，进度见 [`docs/plugin-inventory.md`](docs/plugin-inventory.md)）。
+> 下文「定位/判定/路线」中「官方 UI 复用」均为 M1–M3 底座事实；宿主内嵌与 IPC 载波方案不变。
 
 > **官方网站**：<https://lansi-ai.github.io/dsh-forge/> —— 源在 `website/`（VitePress），本地预览 `npm run docs:dev`，构建 `npm run docs:build`。
 
@@ -28,12 +32,12 @@
 
 ## AI 驱动开发声明
 
-本项目（含 `docs/` 设计文档、`.trae/rules/` 工程规则、`src/` 代码、`scripts/` 验证脚本）**全程由 AI 驱动编写**，
-迭代过程基于 `.trae/rules/workflow.md` 的协作 SOP 与 `docs/pitfalls.md` 的实战踩坑记录进行。
+本项目（含 `docs/` 设计文档、[`docs/PROJECT-RULES.md`](docs/PROJECT-RULES.md) 工程规则、`src/` 代码、`scripts/` 验证脚本）**全程由 AI 驱动编写**，
+迭代过程基于 [`docs/PROJECT-RULES.md`](docs/PROJECT-RULES.md) 的协作 SOP 与 `docs/pitfalls.md` 的实战踩坑记录进行。
 开发中遵循以下原则：
 
 - **契约优先**：所有 IPC 契约 / zod Schema / DTO 先定义于 `src/types/`，作为唯一类型源头，preload / 桥 / 测试类型均由推导获得。
-- **规则驱动**：`.trae/rules/` 下的核心规范（`core-standards` / `architecture` / `active-context` / `git-commit-guide` / `workflow`）约束编码、放置、提交与看板同步。
+- **规则驱动**：[`docs/PROJECT-RULES.md`](docs/PROJECT-RULES.md)（权威规则，由原 `.trae/rules/` 精炼合并，历史见 `docs/rules-archive/`）+ [`docs/active-context.md`](docs/active-context.md)（滚动看板）约束编码、放置、提交与看板同步；新会话用 [`docs/startup-prompts.md`](docs/startup-prompts.md) 的启动咒语激活。
 - **可复现排障**：开发中遇到的环境/架构问题与解法沉淀于 [`docs/pitfalls.md`](docs/pitfalls.md)，供后续会话与协作者查阅复用。
 - **质量自检链**：交付前必过 typecheck / lint / build + 自动化验证脚本（`scripts/verify-*.cjs`）全绿，并经实机验收。
 
@@ -46,7 +50,7 @@
 | Host 进程 | 外部子进程 `dsh web`，壳只是浏览器 | 主进程内嵌 Cordis Host，生命周期与应用合一，可编程启停 |
 | 传输 | 直接加载 `http://127.0.0.1:3080` | 官方预留的 Electron 载波插槽：`file://` dist + `AbstractApiClient` IPC 桥（`doFetch` 覆写），零端口 |
 | 原生能力 | 无 / 壳层脚本零散处理 | 每个能力一个 host 插件（`forge-tray` / `forge-shortcuts` / …），经 `cordis.patch.yml` 装配 |
-| UI | WebView 原样 iframe | **复用官方 Web UI 发行物**，经官方槽位注入桌面侧功能（二期可选自绘主面，见 ADR-006） |
+| UI | WebView 原样 iframe | M1–M3 复用官方 Web UI 发行物（底座已落地）；**M6 全量自绘**：逐槽位替换官方 `ui-*`（ADR-006，进度见 `docs/plugin-inventory.md`） |
 | 旧插件 | 无视 | host 半零改动可用（desktopRoutes 等价面）；client 半经零端口 bundle 兼容面保留（ADR-007） |
 | 可审查性 | 壳行为不可见 | 桌面动作进会话轨迹、权限走 approval 服务、日志统一 |
 | 分发 | 安装包 + 手动 `dsh plugin` | 一包涵盖 runtime + 官方 UI dist + 插件 + 皮肤 + 更新，零外部依赖（仅 Electron 运行时） |
@@ -55,6 +59,9 @@
 
 | 文档 | 内容 |
 | --- | --- |
+| [`docs/PROJECT-RULES.md`](docs/PROJECT-RULES.md) | **AI 协作规则唯一权威入口**：硬约束红线 / 目录放置 / 工作流分级 A・B・C / 提交规范 / 字典索引（原 `.trae/rules/` 精炼合并，历史见 `docs/rules-archive/`） |
+| [`docs/active-context.md`](docs/active-context.md) | **当前任务看板**（滚动窗口 ≤100 行，开工第一读；"MD+HTML 双落盘"已废弃，仅 MD） |
+| [`docs/startup-prompts.md`](docs/startup-prompts.md) | **新会话启动咒语 Preset**：标准 / 轻量 / 续接 / 排障 / 上游升级 五版复制即用 |
 | [`docs/01-research.md`](docs/01-research.md) | DSH 架构调研：Cordis、Host/Client 分层、四象限 RPC、客户端插件加载、SDK、官方/社区桌面现状 |
 | [`docs/02-requirements.md`](docs/02-requirements.md) | 产品定位、目标用户、功能需求矩阵（P0/P1/P2）、非功能需求 |
 | [`docs/03-routes.md`](docs/03-routes.md) | 技术路线对比：Electron 内嵌 Host + 官方 UI 复用（推荐）/ Tauri 2 / SDK 自研 / PWA / 纯套壳；选择论证 |
@@ -68,10 +75,10 @@
 | [`docs/11-risks.md`](docs/11-risks.md) | 风险登记与控制措施 |
 | [`docs/12-references.md`](docs/12-references.md) | 全部依据：本地源码路径 + 官方/社区 URL 引用 + 现有插件 API 面盘点 |
 | [`docs/plugin-inventory.md`](docs/plugin-inventory.md) | **插件清单与自有化进度**：Host/Client 两侧完整插件树、桌面自有插件（`@lansi-ai/dsh-*`）、互斥排除清单、全量自绘（M6）逐阶段进度 |
-| [`docs/13-ui-design.md`](docs/13-ui-design.md) | **（二期可选）** forge-First 自绘 UI 愿景——暂缓，主线不依赖 |
+| [`docs/13-ui-design.md`](docs/13-ui-design.md) | forge-First 自绘 UI 愿景（**已启用为 M6 主线 · D-20**；实际替换进度见 `docs/plugin-inventory.md`） |
 | [`docs/14-implementation-map.md`](docs/14-implementation-map.md) | 实现地图：程序组成、代码位置、关键链路（与代码同步更新） |
 | [`docs/15-computer-use-testing.md`](docs/15-computer-use-testing.md) | **AI 自测驾驶器**：双实例分离 + 零端口管道 + CDP/AX 混合，agent 自主真机测试闭环（设计稿） |
-| [`docs/adr/`](docs/adr/) | 架构决策记录：[ADR-001 选 Electron](docs/adr/adr-001-electron-stack.md) · [ADR-002 宿主内嵌](docs/adr/adr-002-inprocess-host.md) · [ADR-003 IPC 载波](docs/adr/adr-003-ipc-fetch-carrier.md) · [ADR-004 装配模型](docs/adr/adr-004-profile-bundle-model.md) · [ADR-005 版本钉死](docs/adr/adr-005-version-pinning.md) · [ADR-006 自绘主面](docs/adr/adr-006-custom-ui.md)（暂缓·可选） · [ADR-007 旧插件兼容](docs/adr/adr-007-plugin-compat.md) · [ADR-008 数据根分层](docs/adr/adr-008-data-root-layering.md) · [ADR-009 AI 自测驾驶器](docs/adr/adr-009-ai-self-driver.md)（提议） |
+| [`docs/adr/`](docs/adr/) | 架构决策记录：[ADR-001 选 Electron](docs/adr/adr-001-electron-stack.md) · [ADR-002 宿主内嵌](docs/adr/adr-002-inprocess-host.md) · [ADR-003 IPC 载波](docs/adr/adr-003-ipc-fetch-carrier.md) · [ADR-004 装配模型](docs/adr/adr-004-profile-bundle-model.md) · [ADR-005 版本钉死](docs/adr/adr-005-version-pinning.md) · [ADR-006 自绘主面](docs/adr/adr-006-custom-ui.md)（**已启用 · M6 主线**） · [ADR-007 旧插件兼容](docs/adr/adr-007-plugin-compat.md) · [ADR-008 数据根分层](docs/adr/adr-008-data-root-layering.md) · [ADR-009 AI 自测驾驶器](docs/adr/adr-009-ai-self-driver.md)（提议） |
 
 ## 关键结论速览
 
@@ -79,13 +86,13 @@
    webserver 文档明确「只服务浏览器：Electron 用 `file://` 加载 dist，fetch 走 IPC 桥」。
 2. **社区桌面（sdkwork-ai/deepseek-harness-desktop 等）已实现「Electron + IPC + 官方 Web profile + 打包分发」**——
    它们解决的是**分发与桌面体验**，未深入**宿主内嵌与能力插件化**。本项目的差异化在第二层深度。
-3. **推荐方案（当前主线）**：Electron 主进程内嵌 Host（`dsh-app-boot.boot()` 装配 desktop profile），
-   renderer 加载**官方 UI dist**，传输用官方预留的 IPC 载波；桌面能力全部做成 host 插件。
+3. **推荐方案（底座）**：Electron 主进程内嵌 Host（`dsh-app-boot.boot()` 装配 desktop profile），
+   传输用官方预留的 IPC 载波；桌面能力全部做成 host 插件。renderer 自 M6 起为**自绘 UI 逐槽位替换官方 dist**（D-20，见 [`docs/plugin-inventory.md`](docs/plugin-inventory.md)）。
 4. **旧插件不丢弃**：`dsh-terminal` / `dsh-rule-manager` / `dsh-restart` 的 host 半经 `desktopRoutes` 等价面零改动可用，
    client 半经零端口 bundle 兼容面保留（ADR-007）。
 5. **红线**：默认**零 HTTP 端口**；一切与官方 API 的耦合点（`AbstractApiClient.doFetch`、`BootSeams.loadBundle`、
    `webServer` 路由、bundle patch）都收敛在少数可替换文件，随上游 rc 版本钉死。
-6. **UI 差异化（二期可选）**：见 [`13-ui-design.md`](docs/13-ui-design.md) 与 [ADR-006](docs/adr/adr-006-custom-ui.md)——本轮明确不纳入主线。
+6. **UI 差异化（M6 主线）**：自绘 UI 已启用（2026-08-27 D-20，见 [`13-ui-design.md`](docs/13-ui-design.md) 与 [ADR-006](docs/adr/adr-006-custom-ui.md)），逐槽位替换官方 `ui-*` 的进度见 [`docs/plugin-inventory.md`](docs/plugin-inventory.md)。
 
 ## 发版（维护者）
 

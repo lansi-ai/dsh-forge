@@ -1,6 +1,8 @@
 # 04 · 总体架构
 
-> 主线：L2（官方 UI 复用 + 内嵌宿主 + IPC 载波）。自绘 UI（ADR-006/13）为二期可选，不改变本架构的宿主与协议面。
+> 主线：宿主与载波面 = L2（**内嵌宿主 + IPC 载波，不变**）。renderer 自 M6 起为**自绘 UI 逐槽位替换官方 dist**
+> （2026-08-27 D-20 启用 · [ADR-006](adr/adr-006-custom-ui.md)；替换进度见 [`plugin-inventory.md`](plugin-inventory.md)）——
+> 本架构的进程模型、IPC 桥与数据流不受影响。
 
 ## 1. 架构总览（进程模型）
 
@@ -17,7 +19,7 @@
 │  │   │                 插件）+ desktopRoutes（webServer 兼容面）      │ │
 │  │   └─ api 网关       ctx.apiProxy（进程内 handler）                 │ │
 │  │         ▲ IPC 桥（preload 暴露的 window.desktopBridge）            │ │
-│  ├─ 主窗口 × N（renderer：官方 Web UI dist 经 dsh-ui:///file://）     │ │
+│  ├─ 主窗口 × N（renderer：M1–M3=官方 Web UI dist；M6 起逐槽位替换为自绘，见 plugin-inventory） │ │
 │  │        └─ client 插件 bundle 经零端口 bundle 服务（官方机制）       │ │
 │  ├─ Tray / 全局热键 / 通知（宿主插件驱动，非壳层脚标）                  │ │
 │  └─ 更新器 / 崩溃恢复 / 协议注册（forge-updates / forge-recovery） │ │

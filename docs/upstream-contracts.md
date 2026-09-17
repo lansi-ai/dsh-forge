@@ -134,7 +134,7 @@
 7. [x] `CLIENT_EXCLUDE_IDS`：是否新增互斥包需排除（**ui-* 包清单完全一致，无需新增**）
 8. [x] settings.section / sidebar.footer.action 等消费槽位是否变（**无变**）
 9. [x] 官方 `dsh-web-frontend` 版本：确认 dist 结构、槽位契约无破坏性变更（**已发布 0.1.1-rc.2，待实机截图回归**）
-10. [x] 更新本表（刷新各契约 → 最新值），并同步 plugin-inventory.md、active-context.html（**本次已同步 upstream-migrations/11-risks/12-references/01-research/09-roadmap/prd-and-design/extension-guide/plugin-inventory**）
+10. [x] 更新本表（刷新各契约 → 最新值），并同步 plugin-inventory.md、active-context.md（**本次已同步 upstream-migrations/11-risks/12-references/01-research/09-roadmap/prd-and-design/extension-guide/plugin-inventory**）
 
 **⚠️ 2026-09-14 新增常设核查项（本轮起每轮升级必做）**：核对 §7.2 的 `subprocess-run-as-node.ts` / `win32-console*.ts` 两行——① runner 是否仍由 `child_process.spawn(process.execPath, …)` 拉起；② `ctx.subprocess.spawn(spec)` 是否仍带 `argv`/`env` 且语义不变；③ `windowsAclRunnerInvocation()` 是否仍返回 `[process.execPath, <entry>]`。**这三条失效时没有任何报错**（表现 = 工具卡死（坑 61）/ 闪窗 / `workspace-write` 下 `0xC0000142`（坑 63）），**typecheck / lint / 单测与 `upstream:assess` 全都测不出来**。**判据**：升级后 `grep` `dist/forge-host/*.js` 确认注入代码仍在，并在 Electron 内跑一次探针（`facadeCapturedPatch` 自检 + 一次 `pwsh` 冒烟）。
 

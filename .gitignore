@@ -36,10 +36,7 @@ npm-debug.log*
 # IDE
 .idea/
 .vscode/
-# .trae：IDE 注入的规则必须入库（.trae/rules 是规则唯一来源），其余内容照旧忽略
-.trae/*
-!.trae/rules/
-!.trae/rules/**
+# .trae 已删除（2026-09 弃用 TRAE，规则体系迁移至 docs/，见 docs/PROJECT-RULES.md）
 *.swp
 
 # 历史图标源图（tray/app 图标自 2026-09-09 起由 scripts/process-logo.cjs 从 logo.png 生成）

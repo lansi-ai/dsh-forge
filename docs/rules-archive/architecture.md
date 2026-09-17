@@ -1,0 +1,44 @@
+# 工程架构地图 (architecture.md) · 📦 已归档
+
+> **📦 归档注记（2026-09）**：权威规则入口已迁移至 [`docs/PROJECT-RULES.md`](../PROJECT-RULES.md)（由本文件等 6 个规则精炼合并）；
+> 本文保留为历史存档（TRAE 时代规则体系），**不再作为执行依据**；目录放置规则以 PROJECT-RULES.md §2 为准。
+
+## 01. 目录映射与文件放置规则
+- `src/forge-shell/`：Electron 应用外壳（`main.ts` 入口、BrowserWindow 创建、`dsh-ui://` 协议注册、单例锁、崩溃 relaunch）。禁止写业务逻辑与 Host 装配。
+- `src/forge-host/`：宿主装配（`boot()` desktop profile）、`forge-runtime`（roster/manifest 供给 `__DSH_BOOT__`）、IPC 桥宿主端（unary 表分发 + respond 回填 + 帧路由 per-window）、**桌面能力模块**（`forge-api.ts` 提供 `ctx.desktop` 聚合、`forge-tray.ts` / `forge-notify.ts`，经 boot() prepare 注入——M2 当前阶段以**项目内模块**存在，插件包化后再迁出）、**外部插件装载层**（`profile-plugins.ts` / `plugin-package.ts`：解析 `$DSH_HOME/profiles/dsh-forge` 用户补丁层 → 体检外部包 → 把插入行裸名改写为入口绝对路径，装坏的包只跳过不连坐；ADR-004「bundle 即分发面」的落地，见 `docs/extension-guide.md` §2.5）、**Electron 子进程运行时适配器**（`subprocess-run-as-node.ts`：入口首条 import，对 `child_process.spawn` 收窄注入 `ELECTRON_RUN_AS_NODE`——上游以 `process.execPath` 拉起 runner，在 Electron 下会误用 GUI 二进制 `electron.exe` 致工具卡死，见坑 61）、**Windows 控制台适配器**（`win32-console.ts` + `win32-console-preload.ts`：给主进程与子进程 runner 备好隐藏控制台——上游 Windows 进程原语按「子进程共享宿主控制台」设计，GUI 宿主缺控制台会让工具调用闪出 cmd 窗口 / 受限令牌下报 `0xC0000142`；runner 经 `-r` 预载挂载，见坑 63）。
+- `src/forge-compat/`：旧插件兼容（`ctx.webServer` 等价面 `compat-webserver.ts`、preload fetch 拦截白名单、零端口 bundle 服务）。
+- `src/forge-plugins/`：桌面能力 host 插件（forge-tray / forge-hotkey / forge-notify / forge-settings / forge-restart 等），**插件包形态**（`cordis.patch.yml` + `dsh.client` 声明）——M2 暂不在此放文件，留待能力插件包化阶段启用。
+- `src/preload/`：`contextBridge` 白名单 API（`desktopBridge`：rpc/respond/onFrame/http/runtime 等）。
+- `src/types/`：IPC 契约（`zod` Schema）、DTO、`dsh:*` channel 常量、`AppError` 码表——唯一类型源头，renderer/preload/host 三方共享。
+- `src/plugins/`：补充的可 patch 侧插件（如 bundle patch 承载）。
+- `website/`：**官方站点（VitePress）**——源为 `website/*.md` + `website/.vitepress/`（配置与主题），静态资源在 `website/public/`，构建产物 `website/.vitepress/dist/`（已 gitignore，勿与应用的 `dist/` 混淆）。托管 GitHub Pages 项目页；**站点代码不得被 `src/` 引用**，两者零依赖耦合。
+- **放置铁律**：创建任何新文件前核对上述目录；禁止在 `src/` 根目录放置游离业务逻辑；插件边界不得绕开 `ctx.desktop.*` 直连 Electron API。
+
+## 02. 架构分层与数据流向
+- **单向数据流与依赖倒置**：
+  `renderer（官方 dist，仅消费白名单 bridge）` → `preload（desktopBridge）` → `main（forge-host IPC 桥）` → `Host 插件树（rpc/approval/会话）`；
+  下行：`Host 事件` → `forge-host 帧路由` → `webContents.send('dsh:frame')` → `preload onFrame` → `renderer 载波变体`。
+- **解耦隔离**：renderer 禁止直接触碰 Electron/Node API（唯一出口 = `desktopBridge`）；主进程禁止反向依赖 renderer 业务组件；`forge-plugins` 只能经 `ctx.desktop.*` 注册能力，不得 import 其他插件内部实现。
+- **数据语义**：所有上下行帧逐字复用官方四象限协议（rpcId 纪律、zod、`approval/requested` 稳定 id），转换层只允许「封装」不允许「改写语义」。
+- **运行时约束（Electron 宿主）**：上游假设运行时是 Node；凡「以 `process.execPath` 拉起 Node 入口」的能力（子进程 runner、沙箱 runner、目录选择器 worker），在 Electron 下都必须经 `subprocess-run-as-node.ts` 注入 `ELECTRON_RUN_AS_NODE`（坑 61）。**主进程入口必须保持 CJS**——改为 ESM 会使该补丁失效（ESM facade 在链接期抢先创建）。同一条约束还有**控制台前提**：上游 Windows 进程原语按「子进程共享宿主控制台」设计，GUI 宿主（Electron）没有控制台会让控制台类工具闪出 cmd 窗口、受限令牌下报 `0xC0000142`，故主进程与 runner 都必须经 `win32-console.ts` 备好（隐藏）控制台（坑 63）。
+
+## 03. 新建文件定位判定表 (Placement Decision Matrix)
+| 当你需要创建以下类型的文件时... | 请强制放置到以下目录： |
+| :--- | :--- |
+| IPC 契约 / zod Schema / DTO / 错误码 | `src/types/` |
+| Electron 窗口/协议/生命周期 | `src/forge-shell/` |
+| Host 装配 / 载波桥 / manifest | `src/forge-host/` |
+| 旧插件路由等价面 / fetch 拦截 / bundle 服务 | `src/forge-compat/` |
+| 托盘/热键/通知/设置等桌面能力插件 | `src/forge-plugins/[plugin-name]/` |
+| renderer 可调用白名单 API | `src/preload/`（同时更新 `src/types/` 契约） |
+| 可选能力 / 外部可独立安装插件（主包不带） | 独立目录（约定 `E:\Projects\DSH\plugins\<包名>\`），经 `$DSH_HOME/profiles/dsh-forge` 用户补丁层装载；主包侧不新增文件（§01 外部插件装载层） |
+| 通用无状态纯函数（格式化/路径规范化）| `src/forge-host/utils/` 或就近 `utils/` |
+
+## 04. 核心设计模式与模块拆分
+- **契约定义与数据转换**：网络传输必须使用 DTO（zod 推导类型）；`snake_case ↔ camelCase` 转换统一在 bridge 分发层完成；严禁把 Host 内部对象直接透传给 renderer。
+- **组件/类拆分粒度**：单文件 ≤ 200 行（复杂 ≤ 300）；IPC 桥按 domain 拆分（rpc/respond/frame/http 各自模块），禁止一个巨型 `index.ts` 揉合全部通道。
+- **状态管理收敛**：窗口/会话/插件装载等全局状态收敛至 `forge-host` 单例 store；`forge-shell` 仅持有 UI 壳状态（窗口尺寸/显隐）。
+- **插件化红线**：凡桌面能力必须走 `cordis.patch.yml` + host 插件注册（`ctx.desktop.*`）；严禁在 Electron `main.ts` 直接堆业务代码。
+
+## 05. 规则自我演进维护
+本文件为架构静态约束。若后续新增业务子模块目录、拆分服务、调整数据流向或重构分层关系，AI 必须按 `workflow.md` 场景 B 规则更新协议，同步正向重构本文件，禁止「架构地图与工程实际脱节」。

@@ -2,8 +2,8 @@
 
 > 真源：`src/forge-host/boot.ts`（Host 树 §1+§4 insert）与 `src/forge-host/boot-graph.ts`（Client 图谱 desktopDecls + CLIENT_EXCLUDE_IDS）。本文为派生视图，架构变更时同步更新。
 > 命名规范（D-19）：桌面插件统一 `@lansi-ai/dsh-*`（蓝思 scope + dsh 生态前缀）。
-> 状态更新至：**`0.1.2-alpha.4` 基线（2026-09-02 M4-d4）· M6-P6 首件「模型」section 自有化代码完成（2026-09-15，待实机点验）· 插件列表管理面（本地安装/卸载/检查更新）代码完成（2026-09-17，待实机点验）**。
-> HTML 可视化版：`docs/architecture-plugins.html`（尚未同步 0.1.2 后状态，以本文为准）。
+> 状态更新至：**`0.1.5-rc.2` 基线（2026-09-11 C-7 人工适配 · 对齐 upstream-migrations）· M6-P6 首件「模型」section 自有化代码完成（2026-09-15，待实机点验）· 插件列表管理面（本地安装/卸载/检查更新）代码完成（2026-09-17，待实机点验）**。
+> HTML 可视化版：`docs/architecture-plugins.html`（**已过时，停留在 0.1.2 之前的插件树快照，勿作现状依据；以本文为准**）。
 
 图例：✅ 已装载 · ⛔ 已禁用 · 🚫 被排除（不入图谱）· 🟠 预载注册（不激活）· 🔁 已自有化（官方件被桌面件替换）
 
@@ -354,7 +354,7 @@
 | `@lansi-ai/dsh-forge-titlebar` | `forge-titlebar-client.js` | titlebar 行：品牌区（**v7：全局 `brand-mark-{light,dark}.png` 透明底金标**，缺失回退官方 FishLogo/占位）+ 折叠钮 + 中部拖拽区 + 窗控三钮；**v5：logo + 窗控四枚 + 折叠两枚全部支持主题槽位 `icons/titlebar-*.svg`**（状态对成对提供才启用，缺失回退内置，peekSvg 防首帧空窗）（inject: slots+layout+themeIcon） | ✅（2026-09-04 v5 / 2026-09-10 v7，待实机点验） |
 | `@lansi-ai/dsh-forge-sidebar` | `forge-sidebar-client.js` | 侧栏壳（M6-P3）：fold 状态机 + 新会话（经 **`ctx.get('uiWorkspace').startSession`**，坑 32 修复件——非 domain 服务）+ 4 子槽位声明（brand.mark/name、workspaces、settings），子槽位注册者无改动继续工作。**2026-09-07 注**：`sidebar.workspaces` 现由自研 `dsh-forge-workspaces` 顶替（原为官方 ui-workspace）；`sidebar.settings` 仍为官方注册者 | ✅（2026-09-01 实机验证通过） |
 | `@lansi-ai/dsh-forge-session-export` | `forge-session-export-client.js` | Session 日志导出 UI（M6-P2 首件）：header 导出胶囊 + 结果弹层 + 下载 controller，文案修正桌面语义；host 半官方保留 | ✅（2026-09-02 实机验证通过） |
-| `@lansi-ai/dsh-forge-workspaces` | `forge-workspaces-client.js` | 工作区浏览区（M6-P3 W1 骨架）：顶替官方 `ui-workspace`，承接**五项接管面**——`uiWorkspace` 服务（六方法）+ `provideRoot(hooks.workspaces)` + `workspace` 字典 63 键 + 双注册（`sidebar.workspaces` / `conversation.hero.workspace` 各带 directoryFlow 子洞）+ 十三项动作注入面（薄转发官方 domain，数据面零新增）。store persist key 沿用 `dsh.workspace.view.v5`。**选/加工作区已可用**（官方 `WorkspacePickFlow` 等价内核：有工作区列菜单+底部固定「添加」，无工作区 open 即直抬系统目录选择器，收养失败落弹层可重试；侧栏 `addOnly` + 收养后 `startSession`）；**tree 派生层已完成（W2）**（deriveGroups/deriveFlat/deriveSearchResults + indexSubagentDescendants 血缘等纯函数内联进 bundle，`exports.derive` 钩子供 W3/W4 复用 + node:test 单测守护）；**Rows 行组件 + 视图选项已完成（W3）**（组行/会话行 + 状态点 琥珀>蓝>绿 + Manual 拖拽持久排序 + flat 单列表 + 分组/排序下拉，纯函数 8 项单测追加）；**内容搜索已完成（W4）**（wide 内联搜索槽 + narrow 搜索入口 + Host `session.search` 防抖 + sanitizeSearchQuery 线缆护栏 + 本地/内容命中合并派生，单测追加 sanitizeSearchQuery） | 🔄 W1+picker+**W2 派生层 + W3 Rows/视图选项 + W4 内容搜索**（2026-09-08，图谱实测 + 冒烟 40 项 + pickflow 行为 21 项 + 字典 diff + **派生/行/搜索单测 16 项** 全通过，**待实机点验**） |
+| `@lansi-ai/dsh-forge-workspaces` | `forge-workspaces-client.js` | 工作区浏览区（M6-P3 W1 骨架）：顶替官方 `ui-workspace`，承接**五项接管面**——`uiWorkspace` 服务（六方法）+ `provideRoot(hooks.workspaces)` + `workspace` 字典 63 键 + 双注册（`sidebar.workspaces` / `conversation.hero.workspace` 各带 directoryFlow 子洞）+ 十三项动作注入面（薄转发官方 domain，数据面零新增）。store persist key 沿用 `dsh.workspace.view.v5`。**选/加工作区已可用**（官方 `WorkspacePickFlow` 等价内核：有工作区列菜单+底部固定「添加」，无工作区 open 即直抬系统目录选择器，收养失败落弹层可重试；侧栏 `addOnly` + 收养后 `startSession`）；**tree 派生层已完成（W2）**（deriveGroups/deriveFlat/deriveSearchResults + indexSubagentDescendants 血缘等纯函数内联进 bundle，`exports.derive` 钩子供 W3/W4 复用 + node:test 单测守护）；**Rows 行组件 + 视图选项已完成（W3）**（组行/会话行 + 状态点 琥珀>蓝>绿 + Manual 拖拽持久排序 + flat 单列表 + 分组/排序下拉，纯函数 8 项单测追加）；**内容搜索已完成（W4）**（wide 内联搜索槽 + narrow 搜索入口 + Host `session.search` 防抖 + sanitizeSearchQuery 线缆护栏 + 本地/内容命中合并派生，单测追加 sanitizeSearchQuery）；**批量选择/删除已完成**（侧栏 header「多选」进入选择模式：行级勾选 + 工作区组整组勾选（半选态）+ 全选/清除 + 一键批量归档（归档语义，日志与文件保留，`Promise.allSettled` 部分失败可重试）；纯前端，位于本 bundle，`listedSessionIds` 派生钩子 + 单测追加 1 项） | 🔄 W1+picker+**W2 派生层 + W3 Rows/视图选项 + W4 内容搜索**（2026-09-08，图谱实测 + 冒烟 40 项 + pickflow 行为 21 项 + 字典 diff + **派生/行/搜索单测 16 项** 全通过，**待实机点验**）· **批量选择/删除代码完成（2026-09-16，待实机点验）** |
 | `@lansi-ai/dsh-forge-settings` | `forge-settings-client.js` | 设置页「桌面」section（tray/通知/快捷键/自启 Toggle） | ✅ |
 | `@lansi-ai/dsh-forge-theme` | `forge-theme-client.js` | 设置页「外观」section，**由上至下四项一级设置项**：① 应用图标 ② 托盘图标 ③ 品牌 logo（三项 global，存 `userData/icons/` 全局单份、不随包切换）④ 图标包（卡片网格 + 新建包，其下二级=界面图标需求清单：默认折叠、按消费方插件分组卡、行内上传·替换）；槽位真源 = host `ICON_SLOTS`（D-23；坑 27/28/29/30） | ✅（2026-09-04 重构，待实机点验） |
 | `@lansi-ai/dsh-forge-audit-viewer` | `forge-audit-viewer-client.js` | 会话审计查看器 Tab | ✅ |
@@ -392,7 +392,7 @@
 
 ## 四、维护约定
 
-- 架构变更（增删插件/改排除表）时更新本文；`architecture-plugins.html` 尚未同步 0.1.2 后状态，同步前以本文为准。
+- 架构变更（增删插件/改排除表）时更新本文；`architecture-plugins.html` **已过时**（0.1.2 前快照，勿作现状依据），以本文为准。
 - `CLIENT_EXCLUDE_IDS` 追加排除项时，同步更新 §〇「互斥排除清单」与 §二 对应行（🔁 标记）。
 - 每完成一件自有化（新 `@lansi-ai/dsh-*` 替换官方件）：更新 §〇「进度总览 + 已自有化明细」+ §二/§三 对应行，并在 `upstream-contracts.md` §7 登记契约矩阵行。
 - 上游升级时：先对照 `upstream-contracts.md` §7 逐条核对自有插件契约，再复核本文 Host/Client 两侧清单（ui-* 包可能有增删，如 alpha.4 的 tool-subagent-report 废除先例）。

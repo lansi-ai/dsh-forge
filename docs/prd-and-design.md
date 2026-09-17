@@ -1,6 +1,8 @@
 # PRD 与技术设计方案 (prd-and-design.md)
 
 > 由 `start-project` 阶段 1 头脑风暴 Sign-off 之作（2026-08-25）汇总落盘。详细证据链见 `docs/01-research.md` ~ `docs/13-ui-design.md` 与 `docs/adr/`（本仓库设计基线，已从 `plugins/dsh-forge/docs/` 迁入）。
+>
+> **⚠️ 档案注记**：本文为 2026-08-25 的决策快照。其中 **D-3（UI 主线：官方 UI 复用）已被 2026-08-27 用户决策 D-20 超驰**（[ADR-006](adr/adr-006-custom-ui.md) 已启用，全量自绘成为 M6 主线）；其余决策（D-1/D-2 等）仍有效。
 
 ## 1. 业务背景与产品定位
 
@@ -32,7 +34,7 @@
 | --- | --- | --- | --- |
 | D-1 | 技术栈 | **Electron 主进程内嵌 Cordis Host**（`dsh-app-boot.boot()` 装配 desktop profile） | ADR-001 / ADR-002 |
 | D-2 | 传输载波 | **IPC fetch 桥**（`ipcRenderer.invoke('dsh:rpc'/'dsh:respond')` 上行 + `webContents.send('dsh:frame')` 下行），零 HTTP/WS 端口；`--serve=<port>` 为显式兼容模式 | ADR-003 |
-| D-3 | UI 主线 | **主线 = 官方 Web UI 发行物复用**（`dsh-ui://` 自定义协议加载，不修改 dist）；自绘 Desktop UI 降为 **P2 技术债**（ADR-006 启用前不投入） | 02 修订 / ADR-006 |
+| D-3 | UI 主线 | **（2026-08-27 被 D-20 超驰）** 原 = 官方 Web UI 发行物复用（`dsh-ui://` 自定义协议加载 · M1–M3 底座）；现 = **全量自绘 M6 主线**（ADR-006 已启用，逐槽位替换官方 ui-*） | 02 修订 / ADR-006 / D-20 |
 | D-4 | 版本基线 | 原钉 **本地检出 `dsh-v0.1.0-rc.8`**（权威事实源；**2026-09-01 实测上游最新稳定为 `0.1.1-rc.2`**，差异 diff 登记 sync-upstream 迁移表 C 区）；**2026-09-01 已按 M4-d3 实际升级采用 `0.1.2-alpha.3`**（载波整链重写，见 `m4-d3-012-alpha3-migration-plan.md`）；**2026-09-10 已升级 `0.1.5-alpha.2`**（REVIEW 判定经用户决策升级，见迁移表 C-6）；**2026-09-11 已升级 `0.1.5-rc.2`**（REVIEW 判定经用户决策升级，ui-primitives/ui-chat 两包差异均为呈现层、零代码适配，见迁移表 C-7） | ADR-005 |
 | D-5 | 兼容策略 | host 半 = `ctx.desktopRoutes`（webServer 等价面，零监听）；client 半 = 官方槽位注入 + fetch 拦截（白名单） | ADR-007 |
 | D-6 | 里程碑基线 | M1：官方 UI 可对话 + 零端口验证 + 崩溃恢复初版；托盘/热键/通知后置 | 09-roadmap |

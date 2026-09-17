@@ -1,10 +1,14 @@
 # 09 · 里程碑路线图
 
+> **⚠️ 本文为初始计划档案，已偏离实际执行**：M4 分发整体延后，M6 全量自绘 UI 插队为当前主线
+> （2026-08-27 D-20 / [ADR-006](adr/adr-006-custom-ui.md) 启用）；最新执行状态一律以
+> [`docs/active-context.md`](active-context.md) 看板与 [`plugin-inventory.md`](plugin-inventory.md) 为准。
+
 > 目标：**M3 结束 = 可天天用的个人工具**；M5 = 可分发。总工期预估（单人主力 + 零碎协作）：M1–M3 约 6–8 周，M4–M5 约 4–6 周。
 
 ## M0 · 设计与验证（本文档集 · 已完成/进行中）
 - 交付：本 `docs/`（调研、路线、架构、插件设计、安全、ADR）
-- **基线（2026-08-25 决策）**：钉本地检出 `dsh-v0.1.0-rc.8`（**2026-09-01 实测上游最新稳定为 `0.1.1-rc.2`**，差异登记 sync-upstream）；**2026-09-01 已按 M4-d3 实际升级采用 `0.1.2-alpha.3`**（破坏性载波重写，见 `m4-d3-012-alpha3-migration-plan.md`）
+- **基线（2026-08-25 决策）**：钉本地检出 `dsh-v0.1.0-rc.8`（**2026-09-01 实测上游最新稳定为 `0.1.1-rc.2`**，差异登记 sync-upstream）；**2026-09-01 已按 M4-d3 实际升级采用 `0.1.2-alpha.3`**（破坏性载波重写，见 `m4-d3-012-alpha3-migration-plan.md`）；此后沿 alpha.4 → alpha.5 → rc.1 → 0.1.5-alpha.1/2 → **0.1.5-rc.2**（2026-09-11 C-7）持续升级，全部登记见 [`upstream-migrations.md`](upstream-migrations.md)
 
 ## M1 · 桌面骨架（"能打开官方 UI 并对话"）—— 门槛里程碑
 目标：Electron 壳 + 内嵌 Host + **官方 UI dist 原样呈现** + IPC 传输 + **第三方 web 插件无改动装载**。
