@@ -130,6 +130,17 @@ window.__ModuleLoader__.load({
       modelDuplicate: 'Each model ID may appear once.',
       modelContextWindow: 'Context window',
       modelMaxTokens: 'Max output tokens',
+      modelInput: 'Input modalities',
+      inputInherit: 'Not declared (inherits)',
+      inputText: 'Text only',
+      inputBoth: 'Text + image',
+      inputRaw: 'Keep as-is',
+      defaultInput: 'Default input modalities',
+      defaultInputHint: 'Models on this route that declare no modalities inherit this value. When nothing is declared, the host serves them as text only — paste an image and the request is refused.',
+      customApiCatalogHint: 'Leave this as is when the bundled catalog already describes the route; set it only when you list a model that catalog does not describe — such a model cannot inherit a protocol and the save is refused without one.',
+      catalogReplacedHint: 'This list replaces the provider catalog for this route: models you do not list stop being offered.',
+      fetchSourceCatalog: 'Source: the bundled pi-ai catalog (a snapshot that may lag behind the provider).',
+      fetchSourceEndpoint: 'Source: the provider endpoint (live).',
       fetchModels: 'Fetch available models',
       fetching: 'Asking the provider…',
       fetchNeedsBaseUrl: 'Enter the base URL first, then fetch.',
@@ -246,6 +257,17 @@ window.__ModuleLoader__.load({
       modelDuplicate: '每个模型 ID 只能出现一次。',
       modelContextWindow: '上下文窗口',
       modelMaxTokens: '最大输出 token',
+      modelInput: '输入模态',
+      inputInherit: '不声明（继承）',
+      inputText: '仅文本',
+      inputBoth: '文本 + 图像',
+      inputRaw: '保持原样',
+      defaultInput: '默认输入模态',
+      defaultInputHint: '本路由中未单独声明模态的模型都继承此值。完全不声明时，host 按仅文本处理——贴图会被上游闸门拒绝。',
+      customApiCatalogHint: '内置目录已描述的路由保持现状即可；只有当你列出目录未收录的模型时才需要在这里指定协议——这类模型没有可继承的协议，不指定会被拒绝保存。',
+      catalogReplacedHint: '这份列表会替换该路由的提供方目录：未列出的模型将不再提供。',
+      fetchSourceCatalog: '来源：pi-ai 内置目录（快照，可能滞后于提供方）。',
+      fetchSourceEndpoint: '来源：提供方端点（实时）。',
       fetchModels: '获取可用模型',
       fetching: '正在询问提供方…',
       fetchNeedsBaseUrl: '请先填写 API 地址，再获取。',
@@ -448,6 +470,49 @@ window.__ModuleLoader__.load({
     /** 可能未设置的容量字段文本（未设置=空串）。 */
     function capacitySpelling(value) {
       return value === undefined ? '' : formatCapacity(value)
+    }
+
+    // ── 输入模态（`models[].input` 与路由 `defaultInput` 共用一套三态）──────
+    // 为什么必须有这个控件：模态**不在探测回包里**（`llm/discoverModels` 只回
+    // id/name/contextWindow/maxTokens），而目录未收录的模型也没有 `base.input` 可继承
+    // （pi-ai 的 `dsh-llm-pi-ai` 按 `entry.input ?? base.input ?? defaultInput` 逐层回落），
+    // 于是手填模型一律落成 `defaultInput` 的 schema 默认 `["text"]` → 贴图会被
+    // 会话控制器拒绝（`Model "…" does not support image input.`，读
+    // `inputModalities` 的那道闸门）。目录里 `deepseek-v4.1-flash` 这类多模态模型
+    // 因此变成"能选不能发图"，且旧版页面没有任何字段能改它。
+
+    /**
+     * 模态声明的规范化三态（外加一个"原样保留"态）。
+     *
+     * - `inherit`：空数组/缺席 = **未声明**（schema 把缺席 materialize 成 `[]`，pi-ai 的
+     *   `declaredInput()` 把空数组读作"无答案"→ 继续回落下一层）；
+     * - `text` / `both`：两个规范组合，分别写 `["text"]` / `["text","image"]`；
+     * - `raw`：既非空也非规范组合（如仅 `["image"]`，或带重复项的数组）。**保留原值不改写**，
+     *   只在界面上显示原始内容——编辑器不该悄悄替用户重写它看不懂的值。
+     * @param list 声明的模态数组（`models[].input` 或 `defaultInput`），可空。
+     * @returns 规范化选择键。
+     */
+    function modalityChoiceOf(list) {
+      const values = Array.isArray(list) ? list.filter((item) => item === 'text' || item === 'image') : []
+      if (values.length === 0) return 'inherit'
+      const hasText = values.includes('text')
+      const hasImage = values.includes('image')
+      if (hasText && hasImage && values.length === 2) return 'both'
+      if (hasText && values.length === 1) return 'text'
+      return 'raw'
+    }
+
+    /**
+     * 规范化选择键 → 要写入的模态数组。
+     * `inherit`（清空声明）与 `raw`（保留原值，选择器不会产生它）都返回 undefined，
+     * 调用方据此**删除该键**而不是写空数组——空数组与新键在 schema 里语义不同。
+     * @param choice {@link modalityChoiceOf} 的返回值。
+     * @returns `["text"]` / `["text","image"]`，或 undefined 表示不声明。
+     */
+    function modalitiesFromChoice(choice) {
+      if (choice === 'text') return ['text']
+      if (choice === 'both') return ['text', 'image']
+      return undefined
     }
 
     /** 把 schema 校验过的目录值转成不丢隐藏字段的记录数组。 */
@@ -804,6 +869,8 @@ window.__ModuleLoader__.load({
       parseCapacity,
       formatCapacity,
       capacitySpelling,
+      modalityChoiceOf,
+      modalitiesFromChoice,
       modelDrafts,
       validateDeepSeekModels,
       joinProviderDirectory,
@@ -1130,6 +1197,36 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 输入模态选择器（模型 `input` 与路由 `defaultInput` 共用）。
+     *
+     * 三态 + 一个"原样保留"态，语义见 {@link modalityChoiceOf}。`onChange` 只在用户真的
+     * 选了另一档时触发，并统一回传数组或 undefined（undefined = 删除该键，回到继承）；
+     * `raw` 档是既有非法组合的只读展示，选中它不会改写任何值。
+     */
+    function ModalitySelect(props) {
+      const { value, onChange, label, disabled, t } = props
+      const choice = modalityChoiceOf(value)
+      return h('select', {
+        className: 'dsfm-input',
+        value: choice,
+        'aria-label': label,
+        disabled,
+        onChange: (event) => {
+          const next = event.target.value
+          if (next === 'raw') return
+          onChange(modalitiesFromChoice(next))
+        },
+      },
+        choice !== 'raw'
+          ? null
+          : h('option', { value: 'raw' }, `${t('inputRaw')}: ${(Array.isArray(value) ? value : []).join(', ')}`),
+        h('option', { value: 'inherit' }, t('inputInherit')),
+        h('option', { value: 'text' }, t('inputText')),
+        h('option', { value: 'both' }, t('inputBoth')),
+      )
+    }
+
+    /**
      * 直接 DeepSeek 适配器的建议模型目录编辑器：每行 id + 显示名，容量藏在行内折叠区。
      * settings 层以整数组替换 `models`，故首次编辑才落成用户覆盖；重置是移除覆盖而非抄默认值。
      */
@@ -1364,6 +1461,15 @@ window.__ModuleLoader__.load({
       const fetchModels = async () => {
         setBusy(true)
         setFailure(undefined)
+        /**
+         * 一次失败的探测不能把上一次的回包留在弹窗里：用户改了端点/协议再点一次，
+         * 看到"没变化"的候选会以为新端点就是这个列表（陈旧候选是实机误判的常见来源）。
+         */
+        const dropStale = () => {
+          setCandidates(undefined)
+          setPicked(new Set())
+          setCandidateQuery('')
+        }
         try {
           const answer = await operations.discoverModels(probe.settingsNs, {
             ...(probe.provider === undefined ? {} : { provider: probe.provider }),
@@ -1372,11 +1478,13 @@ window.__ModuleLoader__.load({
             ...(probe.apiKey === undefined ? {} : { apiKey: probe.apiKey }),
           })
           if (answer.kind === 'refused') {
+            dropStale()
             setFailure(answer.message)
             return
           }
           const found = answer.models
           if (found.length === 0) {
+            dropStale()
             setFailure(t('fetchEmpty'))
             return
           }
@@ -1425,6 +1533,17 @@ window.__ModuleLoader__.load({
         })
       }
       const askable = probe.provider !== undefined || (probe.baseURL !== undefined && probe.baseURL.length > 0)
+      /**
+       * 该路由是否由 pi-ai 内置目录拥有（目录路由）：`declared !== true` 与
+       * `catalogModels(provider)` 非空是同一件事，故这类路由的探测必然命中目录短路。
+       */
+      const catalogOwned = props.catalogOwned === true
+      /**
+       * 回包来源判定（用于给候选框标注"实时"还是"内置目录"）：目录路由 + 探测带 `provider`
+       * ⇒ `discoverModels` 第一段直接返回本地快照，永远不会走到网络。这条等价关系是硬推理，
+       * 不是启发式——目录路由的定义就是"pi-ai 目录里有它"。
+       */
+      const catalogAnswer = catalogOwned && probe.provider !== undefined
       const overridden = props.overridden === true
       return h('section', { className: 'dsfm-catalog', 'aria-label': t('models') },
         h('div', { className: 'dsfm-catalogHead' },
@@ -1444,6 +1563,10 @@ window.__ModuleLoader__.load({
           }, busy ? t('fetching') : t('fetchModels')),
         ),
         models.length === 0 ? h('p', { className: 'dsfm-modelEmpty' }, t('modelsEmpty')) : null,
+        // 目录路由一旦自己列了模型，服务面就整体替换内置目录（pi-ai 的
+        // `configured.length > 0 ? configured : defaults`）——不提醒的话，为了加一个新模型
+        // 而在这张卡上填一行，会让其余几十个模型静默消失。
+        catalogOwned && models.length > 0 ? h('p', { className: 'dsfm-hint' }, t('catalogReplacedHint')) : null,
         models.length === 0 ? null : h('div', { className: 'dsfm-modelList' }, models.map((model, index) => h('div', { className: 'dsfm-modelEntry', key: index },
           h('div', { className: 'dsfm-modelRow' },
             h('input', {
@@ -1511,6 +1634,16 @@ window.__ModuleLoader__.load({
                   onEdit: editCapacity,
                   onSettle: settleCapacity,
                 }),
+                h('label', { className: 'dsfm-modelField' },
+                  h('span', { className: 'dsfm-modelFieldLabel' }, t('modelInput')),
+                  h(ModalitySelect, {
+                    value: model.input,
+                    label: `${t('modelInput')} ${String(index + 1)}`,
+                    t,
+                    disabled,
+                    onChange: (next) => patch(index, { input: next }),
+                  }),
+                ),
               )
             : null,
         ))),
@@ -1532,6 +1665,7 @@ window.__ModuleLoader__.load({
             h(primitives.Button, { variant: 'primary', disabled: picked.size === 0, onClick: adoptPicked }, t('fetchAdopt')),
           ),
         },
+          h('p', { className: 'dsfm-hint' }, t(catalogAnswer ? 'fetchSourceCatalog' : 'fetchSourceEndpoint')),
           h('div', { className: 'dsfm-pickerToolbar' },
             h('input', {
               className: 'dsfm-input',
@@ -1575,6 +1709,8 @@ window.__ModuleLoader__.load({
       const [protocol, setProtocol] = React.useState(protocols[0] ?? '')
       const [keyDraft, setKeyDraft] = React.useState('')
       const [models, setModels] = React.useState([])
+      /** 路由级默认输入模态：undefined = 不声明（host 默认仅文本）。 */
+      const [defaultInput, setDefaultInput] = React.useState(undefined)
       const [busy, setBusy] = React.useState(false)
       const [failure, setFailure] = React.useState(undefined)
       /** profile 写入已落地：只剩密钥写入可悬置，重试路径仅剩凭据。 */
@@ -1606,6 +1742,9 @@ window.__ModuleLoader__.load({
             ...(storesKey ? { apiKeyEnv: keyRef } : {}),
             api: protocol,
             baseURL: normalizedBaseURL,
+            // 手声明路由的模型在 pi-ai 目录里查不到，模态只能靠这一层给出；
+            // 不声明 = schema 默认 ["text"]，多模态网关会被自己的闸门挡住贴图。
+            ...(defaultInput === undefined ? {} : { defaultInput }),
             models: models.map((model) => ({ ...model })),
           }
           const written = await operations.writeSettings(PI_AI_NS, [{ op: 'set', path: ['providers', route], value: profile }], openedAt)
@@ -1684,6 +1823,17 @@ window.__ModuleLoader__.load({
             disabled: profileDisabled,
             onChange: (event) => setProtocol(event.target.value),
           }, protocols.map((choice) => h('option', { value: choice, key: choice }, choice))),
+        ),
+        h('div', { className: 'dsfm-field' },
+          h('span', { className: 'dsfm-fieldLabel' }, t('defaultInput')),
+          h(ModalitySelect, {
+            value: defaultInput,
+            label: t('defaultInput'),
+            t,
+            disabled: profileDisabled,
+            onChange: setDefaultInput,
+          }),
+          h('p', { className: 'dsfm-hint' }, t('defaultInputHint')),
         ),
         h('div', { className: 'dsfm-field' },
           h('span', { className: 'dsfm-fieldLabel' }, t('keyInput')),
@@ -1777,6 +1927,10 @@ window.__ModuleLoader__.load({
       const setField = (key, next) => {
         const value = next === undefined || next.trim().length === 0 ? undefined : next
         setDraft((current) => (value === undefined ? schema.deletePath(current, [key]) : schema.setPath(current, [key], value)))
+      }
+      /** 数组字段（模态）的写入：undefined = 删除该键（回到继承），不做字符串归一。 */
+      const setArrayField = (key, next) => {
+        setDraft((current) => (next === undefined ? schema.deletePath(current, [key]) : schema.setPath(current, [key], next)))
       }
       const modelFailure = validateDeepSeekModels(schema.getPath(draft, ['models']))
       const keyFailure = apiKeyFailure(keyDraft)
@@ -1964,7 +2118,7 @@ window.__ModuleLoader__.load({
                       onChange: (event) => setField('baseURL', event.target.value === '' ? undefined : event.target.value),
                     }),
                   ),
-                  ownsIdentity
+                  family === 'pi-ai'
                     ? h('div', { className: 'dsfm-field' },
                         h('span', { className: 'dsfm-fieldLabel' }, t('customApi')),
                         h('select', {
@@ -1977,6 +2131,24 @@ window.__ModuleLoader__.load({
                           probeApi === undefined ? h('option', { value: '' }, t('customApiUnset')) : null,
                           protocols.map((choice) => h('option', { value: choice, key: choice }, choice)),
                         ),
+                        // 目录路由的协议默认由 pi-ai 目录提供；但目录**未收录**的手填模型没有
+                        // 可继承的协议，host 会要求本路由显式声明（否则保存被拒：needs an api）。
+                        // 因此这一栏对目录路由同样开放——原实现只在 declared=true 时渲染，
+                        // 等于把"目录外模型"这条路堵死了。
+                        ownsIdentity ? null : h('p', { className: 'dsfm-hint' }, t('customApiCatalogHint')),
+                      )
+                    : null,
+                  family === 'pi-ai'
+                    ? h('div', { className: 'dsfm-field' },
+                        h('span', { className: 'dsfm-fieldLabel' }, t('defaultInput')),
+                        h(ModalitySelect, {
+                          value: schema.getPath(draft, ['defaultInput']) ?? schema.getPath(fallback, ['defaultInput']),
+                          label: t('defaultInput'),
+                          t,
+                          disabled,
+                          onChange: (next) => setArrayField('defaultInput', next),
+                        }),
+                        h('p', { className: 'dsfm-hint' }, t('defaultInputHint')),
                       )
                     : null,
                   supportsHeaders
@@ -2043,7 +2215,7 @@ window.__ModuleLoader__.load({
                         defaultContextWindow: typeof defaultContextWindow === 'number' ? defaultContextWindow : undefined,
                         defaultMaxTokens: typeof defaultMaxTokens === 'number' ? defaultMaxTokens : undefined,
                       })
-                    : h(ModelListEditor, { ...catalogProps, probe, probeBlocked: keyFailure, operations }),
+                    : h(ModelListEditor, { ...catalogProps, probe, probeBlocked: keyFailure, operations, catalogOwned: family === 'pi-ai' && !ownsIdentity }),
                 ),
               ),
         )

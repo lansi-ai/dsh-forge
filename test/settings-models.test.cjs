@@ -109,6 +109,24 @@ test('parseCapacity / formatCapacity：K/M 十进制后缀，往返最短写法'
   assert.equal(pure.capacitySpelling(32000), '32K')
 })
 
+test('modalityChoiceOf / modalitiesFromChoice：三态 + 非规范组合保留原值', () => {
+  assert.equal(pure.modalityChoiceOf(undefined), 'inherit')
+  assert.equal(pure.modalityChoiceOf([]), 'inherit')
+  assert.equal(pure.modalityChoiceOf('nope'), 'inherit')
+  assert.equal(pure.modalityChoiceOf(['text']), 'text')
+  assert.equal(pure.modalityChoiceOf(['text', 'image']), 'both')
+  assert.equal(pure.modalityChoiceOf(['image', 'text']), 'both')
+  // 非规范组合一律 raw：编辑器只展示、不替用户改写看不懂的值（含仅 image 与重复项）。
+  assert.equal(pure.modalityChoiceOf(['image']), 'raw')
+  assert.equal(pure.modalityChoiceOf(['text', 'text']), 'raw')
+  assert.equal(pure.modalityChoiceOf(['text', 'image', 'image']), 'raw')
+  same(pure.modalitiesFromChoice('text'), ['text'])
+  same(pure.modalitiesFromChoice('both'), ['text', 'image'])
+  // inherit 与 raw 都不产值：调用方据此删键（写空数组与不声明在 schema 里语义不同）。
+  assert.equal(pure.modalitiesFromChoice('inherit'), undefined)
+  assert.equal(pure.modalitiesFromChoice('raw'), undefined)
+})
+
 test('validateDeepSeekModels：id 必填/唯一、name 非空、容量正整数', () => {
   assert.equal(pure.validateDeepSeekModels(undefined), undefined)
   assert.equal(pure.validateDeepSeekModels([{ id: 'a' }, { id: 'b', name: 'B', contextWindow: 131072, maxTokens: 8192 }]), undefined)
