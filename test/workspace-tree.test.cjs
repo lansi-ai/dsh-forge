@@ -138,6 +138,19 @@ test('deriveFlat：全部可见会话作顶层行，新在前，子代理/空白
   assert.equal(rows[1].runningSubagentCount, 1, 's2 下 2 个子代理、其中 1 个运行')
 })
 
+test('listedSessionIds：批量选择的全选作用域 = 列表呈现中的会话（归档/子代理/非当前空白排除）', () => {
+  // 归档 a1 排除；sub1/sub2 子代理随父排除；b1 空白非当前排除 → s1, s2, s3
+  const ids = derive.listedSessionIds(list, ['a1'])
+  assert.deepEqual(ids, ['s1', 's2', 's3'])
+
+  // 无归档：a1 恢复可见，追加到末尾（保持 list 原始顺序）
+  assert.deepEqual(derive.listedSessionIds(list, []), ['s1', 's2', 's3', 'a1'])
+
+  // 空白会话仅在是当前选中时可见（暂定「新会话」行参与批量选择）
+  const blankCurrent = derive.listedSessionIds({ ...list, current: 'b1' }, ['a1'])
+  assert.deepEqual(blankCurrent, ['s1', 's2', 's3', 'b1'])
+})
+
 test('deriveSearchResults：空白查询返回空；本地标题/工作区命中 + 内容命中合并去重 + limit 截断', () => {
   const content = { items: [{ sessionId: 's3', snippet: 'Gamma 匹配上下文' }], hasMore: false }
   const empty = derive.deriveSearchResults(list, workspaces, '   ', ['a1'], new Map(), content, 10)

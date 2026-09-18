@@ -468,6 +468,20 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 全量「列表呈现中」的会话 id（批量选择的「全选」作用域）：与行投影同口径 ——
+     * 子代理随父标题档、归档处处不可见、空白会话仅当前选中可见。视图无关：无论
+     * 按工作区分组 / 单列表 / 内容搜索，全选均作用于这同一可见会话集合（搜索态
+     * 由上层收窄为当前结果集，见 WorkspaceBrowser）。返回 list 原始顺序。
+     */
+    function listedSessionIds(list, archivedSessionIds) {
+      const archived = new Set(archivedSessionIds)
+      return list.ids.filter((id) => {
+        const summary = list.byId[id]
+        return summary !== undefined && sessionVisible(summary, list.current, archived)
+      })
+    }
+
+    /**
      * 合并本地标题/工作区子串命中与 Host 排名内容命中：本地行新在前，内容行保持后端口径，
      * 重复会话就地取后端片段。
      * @returns 有界去重的扁平行 + 需进一步细化查询的提示位。
@@ -586,6 +600,14 @@ window.__ModuleLoader__.load({
       'delete.desc': '将把“{name}”从工作区列表中移除。文件夹与会话记录会保留，其会话将显示在“未分组”下。',
       'delete.pending': '正在删除工作区…',
       'menu.fork': '分叉会话', 'menu.archiveSession': '归档会话',
+      // 批量选择/归档（勾选多个会话一键从列表移除，日志保留）
+      'multiSelect': '多选',
+      'batch.selectedCount': '已选 {n} 项',
+      'batch.selectAll': '全选', 'batch.clear': '清除', 'batch.cancel': '取消', 'batch.delete': '删除',
+      'batch.confirmTitle': '删除会话',
+      'batch.confirmDesc': '将把选中的 {n} 个会话从列表中移除（归档）。其会话记录与文件将保留。',
+      'batch.confirm': '删除', 'batch.pending': '正在删除…',
+      'batch.failedPrefix': '部分会话删除失败：',
       'sessions.count.one': '{n} 个会话', 'sessions.count.other': '{n} 个会话',
       'actions.workspace.aria': '工作区“{name}”的操作', 'actions.session.aria': '会话“{name}”的操作',
       'actions.newSession.aria': '在“{name}”中新建会话',
@@ -624,6 +646,14 @@ window.__ModuleLoader__.load({
       'delete.desc': 'This removes “{name}” from the workspace list. The folder and session logs will be kept. Its sessions will appear under Ungrouped.',
       'delete.pending': 'Deleting workspace…',
       'menu.fork': 'Fork session', 'menu.archiveSession': 'Archive session',
+      // Batch select/archive (remove multiple sessions from the list, logs kept)
+      'multiSelect': 'Multi-select',
+      'batch.selectedCount': '{n} selected',
+      'batch.selectAll': 'Select all', 'batch.clear': 'Clear', 'batch.cancel': 'Cancel', 'batch.delete': 'Delete',
+      'batch.confirmTitle': 'Delete sessions',
+      'batch.confirmDesc': 'This removes the {n} selected sessions from the list (archived). Their logs and files will be kept.',
+      'batch.confirm': 'Delete', 'batch.pending': 'Deleting…',
+      'batch.failedPrefix': 'Some sessions failed to delete: ',
       'sessions.count.one': '{n} session', 'sessions.count.other': '{n} sessions',
       'actions.workspace.aria': 'Workspace actions for {name}', 'actions.session.aria': 'Session actions for {name}',
       'actions.newSession.aria': 'New session in {name}',
@@ -1158,6 +1188,93 @@ window.__ModuleLoader__.load({
   font-size: 12px;
   line-height: 18px;
 }
+/* ── 批量选择：入口按钮 / 选择模式工具条 / 勾选框 / 选中行高亮 ── */
+.dsh-forge-workspaces-multiselect {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary)!important;
+  cursor: pointer;
+}
+.dsh-forge-workspaces-multiselect:hover {
+  background: var(--dsw-alias-interactive-bg-hover)!important;
+}
+.dsh-forge-workspaces-batch-toolbar {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+  justify-content: flex-end;
+}
+.dsh-forge-workspaces-batch-count {
+  margin-right: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-tertiary)!important;
+}
+.dsh-forge-workspaces-batch-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  height: 24px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary)!important;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.dsh-forge-workspaces-batch-button:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover)!important;
+}
+.dsh-forge-workspaces-batch-button:disabled {
+  color: var(--dsw-alias-label-quaternary)!important;
+  cursor: default;
+}
+.dsh-forge-workspaces-batch-button.dsh-forge-workspaces-batch-button-danger:not(:disabled) {
+  color: var(--dsw-alias-state-error-primary)!important;
+}
+.dsh-forge-workspaces-checkbox {
+  box-sizing: border-box;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  border-radius: 4px;
+  border: 1px solid var(--dsw-alias-border-l4);
+  background: transparent;
+  color: transparent;
+  align-items: center;
+  justify-content: center;
+  display: inline-flex;
+}
+.dsh-forge-workspaces-checkbox[data-state="checked"] {
+  background: var(--dsw-alias-state-business-primary)!important;
+  border-color: var(--dsw-alias-state-business-primary)!important;
+  color: #fff;
+}
+.dsh-forge-workspaces-checkbox[data-state="indeterminate"] {
+  border-color: var(--dsw-alias-state-business-primary)!important;
+  color: var(--dsw-alias-state-business-primary)!important;
+}
+.dsh-forge-workspaces-project-row.dsh-forge-workspaces-checked,
+.dsh-forge-workspaces-session-row.dsh-forge-workspaces-checked,
+.dsh-forge-workspaces-search-result-row.dsh-forge-workspaces-checked {
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 14%, transparent)!important;
+}
 @media (prefers-reduced-motion: reduce) {
   .dsh-forge-workspaces-session-row,
   .dsh-forge-workspaces-arrow,
@@ -1481,14 +1598,106 @@ window.__ModuleLoader__.load({
         })
       }
 
+      // ── 批量选择 / 批量删除（归档语义：会话从列表移除，日志与文件保留）──
+      // 作用域恒为「当前列表实际呈现的会话」：按工作区分组 / 单列表 / 内容搜索三态
+      // 各自收窄，避免全选误伤当前视图之外的会话。派生值（不落 store）：
+      // 会话集随投影变化自动收敛，无需额外清理效应。
+      const sessionList = useSessions((state) => state)
+      const [selecting, setSelecting] = useState(false)
+      const [selectedIds, setSelectedIds] = useState(() => new Set())
+      const selected = useMemo(() => {
+        const live = new Set(listedSessionIds(sessionList, archivedSessionIds))
+        const next = new Set()
+        for (const id of selectedIds) {
+          if (live.has(id)) next.add(id)
+        }
+        return next
+      }, [selectedIds, sessionList, archivedSessionIds])
+      // 搜索态：全选/可选集收窄为当前搜索结果（本地 + Host 内容命中合并后的可见集）
+      const searchScopeIds = useMemo(() => {
+        if (normalizedQuery === '') return []
+        const currentRemote = remoteSearch.query === normalizedQuery ? remoteSearch : { query: normalizedQuery, status: 'loading', items: [], hasMore: false }
+        return deriveSearchResults(sessionList, workspaces, normalizedQuery, archivedSessionIds, new Map(), currentRemote, searchResultLimit)
+          .items.map((item) => item.id)
+      }, [normalizedQuery, remoteSearch, sessionList, workspaces, archivedSessionIds, searchResultLimit])
+      const selectableIds = normalizedQuery === '' ? listedSessionIds(sessionList, archivedSessionIds) : searchScopeIds
+      const selectedCount = selected.size
+      const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selected.has(id))
+      const toggleSession = useCallback((sessionId) => {
+        setSelectedIds((previous) => {
+          const next = new Set(previous)
+          if (next.has(sessionId)) next.delete(sessionId)
+          else next.add(sessionId)
+          return next
+        })
+      }, [])
+      const toggleGroup = useCallback((sessionIds) => {
+        setSelectedIds((previous) => {
+          const next = new Set(previous)
+          const complete = sessionIds.length > 0 && sessionIds.every((id) => next.has(id))
+          for (const id of sessionIds) {
+            if (complete) next.delete(id)
+            else next.add(id)
+          }
+          return next
+        })
+      }, [])
+      const toggleSelectAll = () => {
+        setSelectedIds((previous) => {
+          const next = new Set(previous)
+          const complete = selectableIds.length > 0 && selectableIds.every((id) => next.has(id))
+          for (const id of selectableIds) {
+            if (complete) next.delete(id)
+            else next.add(id)
+          }
+          return next
+        })
+      }
+      const exitSelection = () => {
+        if (batchDeleting) return
+        setSelecting(false)
+        setSelectedIds(new Set())
+        setBatchOpen(false)
+        setBatchError(null)
+      }
+      const [batchOpen, setBatchOpen] = useState(false)
+      const [batchDeleting, setBatchDeleting] = useState(false)
+      const [batchError, setBatchError] = useState(null)
+      /** 批量归档：全部落定后收口（全成功即退出选择模式；部分失败保留弹层展示错误，
+       *  已失败的会话留在选中集内可直接重试）。 */
+      const confirmBatchDelete = () => {
+        if (batchDeleting) return
+        const targets = [...selected]
+        if (targets.length === 0) return
+        setBatchDeleting(true)
+        setBatchError(null)
+        Promise.allSettled(targets.map((sessionId) => archiveSession(sessionId))).then((results) => {
+          const failed = results
+            .map((result, index) => (result.status === 'rejected' ? targets[index] : undefined))
+            .filter((id) => id !== undefined)
+          setBatchDeleting(false)
+          setSelectedIds(new Set(failed))
+          if (failed.length === 0) {
+            setBatchOpen(false)
+            setBatchError(null)
+            setSelecting(false)
+            return
+          }
+          // 部分失败：弹层不关，错误展示 + 选中集收窄为失败项可重试
+          const first = results.find((result) => result.status === 'rejected')
+          setBatchError(`${t('batch.failedPrefix')}${first !== undefined && first.status === 'rejected' ? (first.reason instanceof Error ? first.reason.message : String(first.reason)) : ''}`)
+        })
+      }
+
       return h('div', {
         className: 'dsh-forge-workspaces-section',
         'data-dsh-forge-workspaces': 'browser',
         'data-wide': wide ? '1' : '0',
       },
         h('div', { className: 'dsh-forge-workspaces-header' },
-          wide && !searchExpanded && h('span', { className: 'dsh-forge-workspaces-section-title' }, groupBy === 'flat' ? t('section.sessions') : t('section.workspaces')),
-          wide && h('div', {
+          wide && !searchExpanded && !selecting && h('span', { className: 'dsh-forge-workspaces-section-title' }, groupBy === 'flat' ? t('section.sessions') : t('section.workspaces')),
+          selecting && h('span', { className: 'dsh-forge-workspaces-section-title' }, t('batch.selectedCount', { n: selectedCount })),
+          wide && !selecting && h('div', {
             ref: searchRoot,
             className: `dsh-forge-workspaces-search${searchExpanded ? ' dsh-forge-workspaces-search-expanded' : ''}`,
             onClick: () => {
@@ -1533,27 +1742,62 @@ window.__ModuleLoader__.load({
               },
             }, h(IconCloseFill14, {})),
           ),
-          h('div', { className: 'dsh-forge-workspaces-header-actions' },
-            wide && h(ViewOptionsMenu, {
-              groupBy,
-              orderBy,
-              onGroupPick: actions.setGroupBy,
-              onOrderPick: actions.setOrderBy,
-              t,
-            }),
-            h('button', {
-              type: 'button',
-              className: 'dsh-forge-workspaces-add',
-              title: t('workspace.add'),
-              'aria-label': t('workspace.add'),
-              onClick: () => {
-                if (!wide) expandSidebar()
-                setAddOpen(true)
-              },
-            }, h(IconPlusOutline16, { size: 14 })),
-          ),
+          selecting
+            ? h('div', { className: 'dsh-forge-workspaces-batch-toolbar' },
+                h('button', {
+                  type: 'button',
+                  className: 'dsh-forge-workspaces-batch-button',
+                  disabled: selectableIds.length === 0,
+                  onClick: toggleSelectAll,
+                }, allSelected ? t('batch.clear') : t('batch.selectAll')),
+                h('button', {
+                  type: 'button',
+                  className: 'dsh-forge-workspaces-batch-button dsh-forge-workspaces-batch-button-danger',
+                  disabled: selectedCount === 0 || batchDeleting,
+                  onClick: () => {
+                    setBatchError(null)
+                    setBatchOpen(true)
+                  },
+                }, t('batch.delete')),
+                h('button', {
+                  type: 'button',
+                  className: 'dsh-forge-workspaces-batch-button',
+                  disabled: batchDeleting,
+                  onClick: exitSelection,
+                }, t('batch.cancel')),
+              )
+            : h('div', { className: 'dsh-forge-workspaces-header-actions' },
+                wide && h(ViewOptionsMenu, {
+                  groupBy,
+                  orderBy,
+                  onGroupPick: actions.setGroupBy,
+                  onOrderPick: actions.setOrderBy,
+                  t,
+                }),
+                wide && h('button', {
+                  type: 'button',
+                  className: 'dsh-forge-workspaces-multiselect',
+                  title: t('multiSelect'),
+                  'aria-label': t('multiSelect'),
+                  onClick: () => {
+                    setAddOpen(false)
+                    setSearchExpanded(false)
+                    setSelecting(true)
+                  },
+                }, h(MultiSelectIcon, { size: 14 })),
+                h('button', {
+                  type: 'button',
+                  className: 'dsh-forge-workspaces-add',
+                  title: t('workspace.add'),
+                  'aria-label': t('workspace.add'),
+                  onClick: () => {
+                    if (!wide) expandSidebar()
+                    setAddOpen(true)
+                  },
+                }, h(IconPlusOutline16, { size: 14 })),
+              ),
         ),
-        !wide && h('div', { className: 'dsh-forge-workspaces-search-row' },
+        !wide && !selecting && h('div', { className: 'dsh-forge-workspaces-search-row' },
           h('button', {
             type: 'button',
             className: 'dsh-forge-workspaces-search-button',
@@ -1576,6 +1820,7 @@ window.__ModuleLoader__.load({
                 query: normalizedQuery,
                 remote: remoteSearch,
                 resultLimit: searchResultLimit,
+                selection: selecting ? { mode: true, selected, toggleSession, toggleGroup } : undefined,
                 t,
               })
             : groupBy === 'flat'
@@ -1592,6 +1837,7 @@ window.__ModuleLoader__.load({
                   sessionUpdatedAtByAccount,
                   syncSessionOrderAccount: actions.syncSessionOrderAccount,
                   setSessionOrder: actions.setSessionOrder,
+                  selection: selecting ? { mode: true, selected, toggleSession, toggleGroup } : undefined,
                   t,
                 })
               : h(SessionTree, {
@@ -1624,6 +1870,7 @@ window.__ModuleLoader__.load({
                 syncSessionOrderAccount: actions.syncSessionOrderAccount,
                 setSessionOrder: actions.setSessionOrder,
                 home,
+                selection: selecting ? { mode: true, selected, toggleSession, toggleGroup } : undefined,
                 t,
               }),
         ),
@@ -1701,6 +1948,31 @@ window.__ModuleLoader__.load({
           children: deleteTarget !== null && h('div', { className: 'dsh-forge-workspaces-delete-status' },
             t('delete.desc', { name: deleteTarget.title }),
             deleteError !== null && h('div', { className: 'dsh-forge-workspaces-rename-error', role: 'alert' }, deleteError),
+          ),
+        }),
+        // 批量删除（归档语义）确认
+        h(Modal, {
+          open: batchOpen,
+          onClose: () => {
+            if (batchDeleting) return
+            setBatchOpen(false)
+            setBatchError(null)
+          },
+          closeLabel: t('close'),
+          title: t('batch.confirmTitle'),
+          footer: h(React.Fragment, null,
+            h(Button, { variant: 'outline', disabled: batchDeleting, onClick: () => {
+              if (batchDeleting) return
+              setBatchOpen(false)
+              setBatchError(null)
+            } }, t('cancel')),
+            batchDeleting
+              ? h('div', { className: 'dsh-forge-workspaces-delete-status' }, t('batch.pending'))
+              : h(Button, { className: 'dsh-forge-workspaces-delete-action', variant: 'danger', onClick: confirmBatchDelete }, t('batch.confirm')),
+          ),
+          children: h('div', { className: 'dsh-forge-workspaces-delete-status' },
+            t('batch.confirmDesc', { n: selectedCount }),
+            batchError !== null && h('div', { className: 'dsh-forge-workspaces-rename-error', role: 'alert' }, batchError),
           ),
         }),
       )
@@ -1903,6 +2175,49 @@ window.__ModuleLoader__.load({
       throw new Error(`unknown pending interaction: ${String(value)}`)
     }
 
+    /** 多选入口图标（列表三行 + 对勾，16px 内联 SVG）。 */
+    function MultiSelectIcon({ size }) {
+      return h('svg', {
+        width: size, height: size, viewBox: '0 0 16 16', fill: 'none',
+        stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round',
+        'aria-hidden': true,
+      },
+        h('path', { d: 'M2.5 4h6.5' }),
+        h('path', { d: 'M2.5 8h6.5' }),
+        h('path', { d: 'M2.5 12h3.5' }),
+        h('path', { d: 'M10.5 11.5l1.5 1.5 3-3.5' }),
+      )
+    }
+
+    /** 勾选框内容字形：checked 白钩 / indeterminate 短横 / 其他为空。 */
+    function CheckboxGlyph({ state }) {
+      if (state === 'checked') {
+        return h('svg', {
+          width: 12, height: 12, viewBox: '0 0 16 16', fill: 'none',
+          stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round',
+          'aria-hidden': true,
+        }, h('path', { d: 'M3.5 8.5l3 3 6-6.5' }))
+      }
+      if (state === 'indeterminate') {
+        return h('svg', {
+          width: 10, height: 10, viewBox: '0 0 16 16', fill: 'none',
+          stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round',
+          'aria-hidden': true,
+        }, h('path', { d: 'M4 8h8' }))
+      }
+      return null
+    }
+
+    /** 批量选择勾选框（方框 + 状态字形；行可点，无独立交互）。 */
+    function SelectionCheckbox({ state }) {
+      return h('span', {
+        className: 'dsh-forge-workspaces-checkbox',
+        'data-state': state,
+        role: 'checkbox',
+        'aria-checked': state === 'checked' ? 'true' : state === 'indeterminate' ? 'mixed' : 'false',
+      }, h(CheckboxGlyph, { state }))
+    }
+
     /**
      * 会话状态展示集合：pending 交互为最高优先级，其次运行中，其次运行子代理，
      * 其次完成提醒，最后空闲。
@@ -1972,8 +2287,10 @@ window.__ModuleLoader__.load({
     /**
      * 工作区组行：文件夹图标 + chevron + 标题；悬停浮现折叠三角与「新建会话」，
      * 真实工作区另附操作菜单（重命名/删除）与整行拖拽。
+     * 批量选择模式下（selectable）点击改为整组勾选（该组全部可见会话），
+     * 隐藏操作菜单 / 新建会话 / 拖拽，leading 槽位让给勾选框（含半选态）。
      */
-    function ProjectRowItem({ group, onToggle, onCreate, actions, drag, home, t }) {
+    function ProjectRowItem({ group, onToggle, onCreate, actions, drag, home, selectable = false, checked = false, indeterminate = false, onToggleSelection, t }) {
       const row = group
       const label = row.workspaceId === undefined ? t('group.ungrouped') : row.label
       const active = group.expanded && group.containsCurrent
@@ -1983,24 +2300,27 @@ window.__ModuleLoader__.load({
         { id: 'delete', label: t('delete.workspace'), icon: h(IconTrashOutline16, {}), danger: true },
       ]
       const ownRow = h('div', {
-        className: `dsh-forge-workspaces-project-row${menuOpen ? ' dsh-forge-workspaces-menu-open' : ''}`,
+        className: `dsh-forge-workspaces-project-row${menuOpen ? ' dsh-forge-workspaces-menu-open' : ''}${checked ? ' dsh-forge-workspaces-checked' : ''}`,
         role: 'treeitem', 'aria-expanded': row.expanded,
-        onClick: onToggle,
-        draggable: drag !== undefined,
-        onDragStart: drag === undefined ? undefined : (e) => {
+        onClick: selectable ? onToggleSelection : onToggle,
+        draggable: !selectable && drag !== undefined,
+        onDragStart: selectable || drag === undefined ? undefined : (e) => {
           e.dataTransfer.effectAllowed = 'move'
           e.dataTransfer.setData('text/plain', row.key)
           drag.start()
         },
-        onDragEnd: drag?.end,
+        onDragEnd: selectable ? undefined : drag?.end,
       },
+        selectable && h(SelectionCheckbox, {
+          state: indeterminate ? 'indeterminate' : checked ? 'checked' : 'unchecked',
+        }),
         h('span', { className: `dsh-forge-workspaces-slot dsh-forge-workspaces-folder${active ? ' dsh-forge-workspaces-folder-active' : ''}` },
           row.expanded ? h(IconFolderOpen16, {}) : h(IconFolderClose16, {})),
         h('span', { className: 'dsh-forge-workspaces-slot dsh-forge-workspaces-chevron' },
           h(IconTriangleRightFill14, { className: `dsh-forge-workspaces-arrow${row.expanded ? ' dsh-forge-workspaces-arrow-open' : ''}` })),
         h('span', { className: 'dsh-forge-workspaces-project-text' },
           h('span', { className: 'dsh-forge-workspaces-title' }, label)),
-        h('span', { className: 'dsh-forge-workspaces-row-actions' },
+        !selectable && h('span', { className: 'dsh-forge-workspaces-row-actions' },
           actions !== undefined && h(Menu, {
             open: menuOpen,
             onClose: () => { setMenuOpen(false) },
@@ -2037,7 +2357,7 @@ window.__ModuleLoader__.load({
           createdAt: row.createdAt,
           t,
         }),
-        disabled: menuOpen,
+        disabled: selectable || menuOpen,
         copyText: row.cwd,
         copyLabel: t('copy'),
         copiedLabel: t('hover.copied'),
@@ -2046,9 +2366,10 @@ window.__ModuleLoader__.load({
 
     /**
      * 会话行：状态点（pending 优选）+ 标题 + 相对时间 + 行操作菜单（重命名/分叉/归档）。
-     * `flat` 模式省略无状态行的空状态点槽位。
+     * `flat` 模式省略无状态行的空状态点槽位。批量选择模式下（selectable）点击改为
+     * 勾选切换，隐藏行操作菜单与拖拽，leading 槽位让给勾选框。
      */
-    function SessionNodeItem({ node, currentId, now, onOpen, onRename, onFork, onArchive, drag, flat = false, t }) {
+    function SessionNodeItem({ node, currentId, now, onOpen, onRename, onFork, onArchive, drag, flat = false, selectable = false, checked = false, onToggle, t }) {
       const row = node
       const title = displayTitle(node, t)
       const selected = node.id === currentId
@@ -2062,9 +2383,9 @@ window.__ModuleLoader__.load({
       ]
       return h(HoverCard, {
         anchor: h('div', {
-          className: `dsh-forge-workspaces-session-row${selected ? ' dsh-forge-workspaces-selected' : ''}${menuOpen ? ' dsh-forge-workspaces-menu-open' : ''}${flat && !showStatus ? ' dsh-forge-workspaces-flat-no-status' : ''}${drag?.marker === 'before' ? ' dsh-forge-workspaces-drop-before' : ''}${drag?.marker === 'after' ? ' dsh-forge-workspaces-drop-after' : ''}`,
+          className: `dsh-forge-workspaces-session-row${selected ? ' dsh-forge-workspaces-selected' : ''}${checked ? ' dsh-forge-workspaces-checked' : ''}${menuOpen ? ' dsh-forge-workspaces-menu-open' : ''}${flat && !showStatus ? ' dsh-forge-workspaces-flat-no-status' : ''}${drag?.marker === 'before' ? ' dsh-forge-workspaces-drop-before' : ''}${drag?.marker === 'after' ? ' dsh-forge-workspaces-drop-after' : ''}`,
           role: 'treeitem', 'aria-selected': selected,
-          onClick: () => { onOpen(node.id) },
+          onClick: () => { if (selectable) onToggle(node.id); else onOpen(node.id) },
           draggable: drag !== undefined,
           onDragStart: drag === undefined ? undefined : (e) => {
             e.dataTransfer.effectAllowed = 'move'
@@ -2084,12 +2405,13 @@ window.__ModuleLoader__.load({
             drag.drop(rowHalf(e))
           },
         },
+          selectable && h(SelectionCheckbox, { state: checked ? 'checked' : 'unchecked' }),
           (!flat || showStatus) && h('span', { className: 'dsh-forge-workspaces-slot' },
             showStatus && h(SessionStatusDots, { statuses })),
           h('span', { className: 'dsh-forge-workspaces-title' }, title),
           row.hasActiveSchedule && h(ActiveScheduleIndicator, { t }),
           !row.blank && h('span', { className: 'dsh-forge-workspaces-time' }, timeLabel(row.updatedAt, now, t)),
-          !row.blank && h('span', { className: 'dsh-forge-workspaces-row-actions' },
+          !row.blank && !selectable && h('span', { className: 'dsh-forge-workspaces-row-actions' },
             h(Menu, {
               open: menuOpen,
               onClose: () => { setMenuOpen(false) },
@@ -2112,7 +2434,7 @@ window.__ModuleLoader__.load({
           ),
         ),
         content: h(SessionHoverContent, { node, now, t }),
-        disabled: menuOpen || drag?.active === true,
+        disabled: menuOpen || drag?.active === true || selectable,
         copyText: row.blank ? undefined : row.title,
         copyLabel: t('copy'),
         copiedLabel: t('hover.copied'),
@@ -2121,18 +2443,20 @@ window.__ModuleLoader__.load({
 
     /**
      * 搜索结果行：主状态点 + 标题 + 活动定时任务，次行工作区归属 + 命中摘录。
+     * 批量选择模式下（selectable）点击改为勾选切换，leading 槽位让给勾选框。
      */
-    function SearchResultItem({ result, currentId, onOpen, t }) {
+    function SearchResultItem({ result, currentId, onOpen, selectable = false, checked = false, onToggle, t }) {
       const selected = result.id === currentId
       const statuses = sessionStatuses(result, t)
       const primaryStatus = statuses[0]
       return h('button', {
         type: 'button',
-        className: `dsh-forge-workspaces-search-result-row${selected ? ' dsh-forge-workspaces-selected' : ''}`,
+        className: `dsh-forge-workspaces-search-result-row${selected ? ' dsh-forge-workspaces-selected' : ''}${checked ? ' dsh-forge-workspaces-checked' : ''}`,
         role: 'treeitem',
         'aria-selected': selected,
-        onClick: () => { onOpen(result.id) },
+        onClick: () => { if (selectable) onToggle(result.id); else onOpen(result.id) },
       },
+        selectable && h(SelectionCheckbox, { state: checked ? 'checked' : 'unchecked' }),
         h('span', { className: 'dsh-forge-workspaces-search-result-heading' },
           h('span', { className: 'dsh-forge-workspaces-slot' },
             (primaryStatus.state !== 'done' || result.completed) && h(SessionStatusDots, { statuses }),
@@ -2151,7 +2475,7 @@ window.__ModuleLoader__.load({
      * 搜索主体：本地元数据命中（标题/工作区）与 Host 内容命中经 deriveSearchResults 合并去重，
      * 逐条渲染 SearchResultItem，并呈现 loading / error / hasMore 状态。
      */
-    function SearchResults({ useSessions, useSessionPendingInteraction, open, workspaces, archivedSessionIds, query, remote, resultLimit, t }) {
+    function SearchResults({ useSessions, useSessionPendingInteraction, open, workspaces, archivedSessionIds, query, remote, resultLimit, selection, t }) {
       const list = useSessions((s) => s)
       const pendingInteractions = useSessionPendingInteraction((s) => s)
       const currentRemote = remote.query === query ? remote : {
@@ -2181,6 +2505,9 @@ window.__ModuleLoader__.load({
               result,
               currentId: list.current,
               onOpen: open,
+              selectable: selection?.mode === true,
+              checked: selection?.mode === true && selection.selected.has(result.id),
+              onToggle: selection?.toggleSession,
               t,
             })),
           ),
@@ -2231,7 +2558,7 @@ window.__ModuleLoader__.load({
     }
 
     /** 单列表平铺会话树（groupBy=flat）：复用同一行组件，跨工作区按账户排序对齐。 */
-    function FlatList({ useSessions, useSessionPendingInteraction, open, forkSession, onSessionRename, onSessionArchive, archivedSessionIds, orderBy, sessionOrderByAccount, sessionUpdatedAtByAccount, syncSessionOrderAccount, setSessionOrder, t }) {
+    function FlatList({ useSessions, useSessionPendingInteraction, open, forkSession, onSessionRename, onSessionArchive, archivedSessionIds, orderBy, sessionOrderByAccount, sessionUpdatedAtByAccount, syncSessionOrderAccount, setSessionOrder, selection, t }) {
       const list = useSessions((s) => s)
       const pendingInteractions = useSessionPendingInteraction((s) => s)
       const baseRows = useMemo(() => deriveFlat(list, archivedSessionIds, pendingInteractions), [list, archivedSessionIds, pendingInteractions])
@@ -2291,6 +2618,7 @@ window.__ModuleLoader__.load({
           rows.length === 0 && h('div', { className: 'dsh-forge-workspaces-empty' }, t('empty.none')),
           rows.map((node) => {
             const active = drag !== null
+            const batchSelect = selection?.mode === true
             return h(SessionNodeItem, {
               key: node.id,
               node,
@@ -2301,7 +2629,10 @@ window.__ModuleLoader__.load({
               onFork: forkSession,
               onArchive: onSessionArchive,
               flat: true,
-              drag: {
+              selectable: batchSelect,
+              checked: batchSelect && selection.selected.has(node.id),
+              onToggle: selection?.toggleSession,
+              drag: batchSelect ? undefined : {
                 start: () => {
                   dropCommitted.current = false
                   setDrag({ accountKey: FLAT_SESSION_ORDER_KEY, sessionId: node.id, over: null })
@@ -2337,7 +2668,7 @@ window.__ModuleLoader__.load({
      * 数据经 props 注入（useSessions/useSessionPendingInteraction 钩子 + store 派生态
      * + browserInjected 动作），不持自建 store。
      */
-    function SessionTree({ useSessions, useSessionPendingInteraction, startSession, open, forkSession, workspaces, workspaceReady, archivedSessionIds, onWorkspaceRename, onWorkspaceDelete, onSessionRename, onSessionArchive, insertWorkspaceBefore, insertSessionBefore, orderBy, groupExpansion, setGroupExpanded, sessionOrderByAccount, sessionUpdatedAtByAccount, syncSessionOrderAccount, setSessionOrder, home, t }) {
+    function SessionTree({ useSessions, useSessionPendingInteraction, startSession, open, forkSession, workspaces, workspaceReady, archivedSessionIds, onWorkspaceRename, onWorkspaceDelete, onSessionRename, onSessionArchive, insertWorkspaceBefore, insertSessionBefore, orderBy, groupExpansion, setGroupExpanded, sessionOrderByAccount, sessionUpdatedAtByAccount, syncSessionOrderAccount, setSessionOrder, home, selection, t }) {
       const list = useSessions((s) => s)
       const pendingInteractions = useSessionPendingInteraction((s) => s)
       const current = list.current
@@ -2347,6 +2678,18 @@ window.__ModuleLoader__.load({
       const [workspaceDrag, setWorkspaceDrag] = useState(null)
       const workspaceDropCommitted = useRef(false)
       const previousOrderBy = useRef(orderBy)
+      const batchSelect = selection?.mode === true
+      // 批量选择的组员集合：与行投影同口径（archived/blank 非当前/子代理不可选）
+      const archivedSessionSet = useMemo(() => new Set(archivedSessionIds), [archivedSessionIds])
+      const groupMemberSessionIds = (group) => {
+        const source = group.workspaceId === undefined
+          ? orderedUngroupedSessionIds
+          : orderedWorkspaces.find((workspace) => workspace.workspaceId === group.workspaceId)?.sessionIds ?? []
+        return batchSelect ? source.filter((id) => {
+          const summary = list.byId[id]
+          return summary !== undefined && sessionVisible(summary, list.current, archivedSessionSet)
+        }) : []
+      }
       useNativeDragAcceptance(drag !== null || workspaceDrag !== null)
       // 0.1.5：未就绪（phase 未 ready 或流 loading）期间旧投影不可信，不解析当前组
       // （否则可能按陈旧归属把错误的组自动展开）。
@@ -2477,7 +2820,7 @@ window.__ModuleLoader__.load({
             const collapsed = collapsedSessionRows(group.sessions)
             const sessionsExpanded = expandedSessionGroups.includes(group.key)
             const workspaceMarker = workspaceId !== undefined && workspaceDrag?.over?.id === workspaceId ? workspaceDrag.over.half : null
-            const workspaceDragProps = workspaceId === undefined ? undefined : {
+            const workspaceDragProps = batchSelect || workspaceId === undefined ? undefined : {
               start: () => {
                 workspaceDropCommitted.current = false
                 setWorkspaceDrag({ workspaceId, over: null })
@@ -2495,6 +2838,10 @@ window.__ModuleLoader__.load({
               if (workspaceDrag === null) return
               commitWorkspaceDrag(workspaceDrag, { id: workspaceId, half })
             }
+            // 批量选择：整组勾选 = 该组全部可选（可见）会话；全选/半选态驱动组行勾选框
+            const memberIds = groupMemberSessionIds(group)
+            const groupChecked = memberIds.length > 0 && memberIds.every((id) => selection.selected.has(id))
+            const groupIndeterminate = !groupChecked && memberIds.some((id) => selection.selected.has(id))
             return h('div', {
               key: group.key,
               className: `dsh-forge-workspaces-group-section${workspaceMarker === 'before' ? ' dsh-forge-workspaces-workspace-drop-before' : ''}${workspaceMarker === 'after' ? ' dsh-forge-workspaces-workspace-drop-after' : ''}`,
@@ -2523,6 +2870,12 @@ window.__ModuleLoader__.load({
                   }
                 },
                 drag: workspaceDragProps,
+                selectable: batchSelect,
+                checked: groupChecked,
+                indeterminate: groupIndeterminate,
+                onToggleSelection: () => {
+                  if (batchSelect) selection.toggleGroup(memberIds)
+                },
                 actions: group.workspaceId === undefined ? undefined : {
                   rename: () => {
                     if (group.workspaceId !== undefined) onWorkspaceRename(group.workspaceId, group.label)
@@ -2543,7 +2896,10 @@ window.__ModuleLoader__.load({
                   onRename: onSessionRename,
                   onFork: forkSession,
                   onArchive: onSessionArchive,
-                  drag: {
+                  selectable: batchSelect,
+                  checked: batchSelect && selection.selected.has(node.id),
+                  onToggle: selection?.toggleSession,
+                  drag: batchSelect ? undefined : {
                     start: () => {
                       sessionDropCommitted.current = false
                       setDrag({ accountKey: group.key, sessionId: node.id, over: null })
@@ -2593,6 +2949,7 @@ window.__ModuleLoader__.load({
       deriveGroups,
       deriveFlat,
       deriveSearchResults,
+      listedSessionIds,
       groupByWorkspace,
       sessionNode,
       sessionVisible,
